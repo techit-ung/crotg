@@ -5,6 +5,7 @@
 - Milestone 2 complete: repo detection, branch selection, diff generation/parsing, Diff tab UI.
 - Milestone 3 complete: guideline scanning, multi-select, free-text input, and guideline hash display.
 - Milestone 4 complete: OpenRouter client, prompt builders, per-file review chunking, comment dedupe, verdict generation.
+- Milestone 5 complete: comments table with filters, detail pane, and publish toggles.
 
 ## What was implemented
 - TUI entry point: `cmd/reviewer/main.go`
@@ -20,13 +21,14 @@
 - OpenRouter client + retries: `internal/llm/client.go`
 - Review engine with prompt builders, per-file chunking, comment parsing/dedupe, verdict logic: `internal/review/engine.go`, `internal/review/prompts.go`, `internal/review/types.go`, `internal/review/diff_render.go`
 - Comments + Verdict views now render basic review output and progress in `internal/app/model.go`
+- Comments tab: table view, severity/file filters, detail pane, and publish include/exclude toggles in `internal/app/model.go`
 - Dependencies: Bubble Tea, Bubbles, Lip Gloss added to `go.mod`/`go.sum`
 
 ## How to run
 - `go run ./cmd/reviewer`
 
-## Suggested next step (Milestone 5)
-- Build Comments tab table with filters and detail pane, plus publish include/exclude toggles.
+## Suggested next step (Milestone 6)
+- Build Publish tab config inputs and Bitbucket Cloud publish flow.
 
 ## Notes
 - Config is stored under `~/.config/reviewer/config.json` unless `CODE_REVIEWER_CONFIG_DIR` is set.

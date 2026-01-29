@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -56,6 +57,14 @@ type Model struct {
 	reviewResult   review.Result
 	reviewProgress reviewProgressMsg
 	reviewUpdates  <-chan tea.Msg
+
+	commentsTable          table.Model
+	commentsIndexMap       []int
+	commentsFileFilter     textinput.Model
+	commentsFilterActive   bool
+	commentsSeverityFilter review.Severity
+	commentsTableWidth     int
+	commentsTableHeight    int
 }
 
 func NewModel() Model {
@@ -69,6 +78,18 @@ func NewModel() Model {
 	keyInput.EchoCharacter = '*'
 	branchFilterInput := textinput.New()
 	branchFilterInput.Placeholder = "Filter branches"
+	commentsFileFilter := textinput.New()
+	commentsFileFilter.Placeholder = "Filter by file path"
+	commentsTable := table.New(
+		table.WithColumns([]table.Column{
+			{Title: "Sev", Width: 9},
+			{Title: "File", Width: 24},
+			{Title: "Line", Width: 8},
+			{Title: "Title", Width: 30},
+			{Title: "Pub", Width: 5},
+		}),
+		table.WithFocused(true),
+	)
 
 	return Model{
 		tabs: []string{
@@ -78,12 +99,14 @@ func NewModel() Model {
 			"Publish",
 			"Config",
 		},
-		inWizard:          true,
-		wizardStep:        wizardRepo,
-		pathInput:         pathInput,
-		freeTextInput:     freeTextInput,
-		keyInput:          keyInput,
-		branchFilterInput: branchFilterInput,
+		inWizard:           true,
+		wizardStep:         wizardRepo,
+		pathInput:          pathInput,
+		freeTextInput:      freeTextInput,
+		keyInput:           keyInput,
+		branchFilterInput:  branchFilterInput,
+		commentsFileFilter: commentsFileFilter,
+		commentsTable:      commentsTable,
 	}
 }
 
@@ -144,6 +167,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reviewErr = msg.err
 		if msg.err == nil {
 			m.reviewResult = msg.result
+			m.refreshCommentsTable()
+			m.updateCommentsTableLayout()
 		}
 		return m, nil
 	case repoDetectedMsg:
@@ -158,10 +183,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.updateCommentsTableLayout()
 		return m, nil
 	case tea.KeyMsg:
 		if m.inWizard {
 			return m.updateWizard(msg)
+		}
+		if m.tabs[m.active] == "Comments" {
+			return m.updateCommentsTab(msg)
 		}
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -816,12 +845,34 @@ func (m Model) renderCommentsView() string {
 	if len(m.reviewResult.Comments) == 0 {
 		return "No comments generated."
 	}
-
-	lines := make([]string, 0, len(m.reviewResult.Comments))
-	for _, comment := range m.reviewResult.Comments {
-		lines = append(lines, fmt.Sprintf("[%s] %s:%d %s", comment.Severity, comment.FilePath, comment.StartLine, comment.Title))
+	if len(m.commentsIndexMap) == 0 {
+		return lipgloss.JoinVertical(
+			lipgloss.Top,
+			m.renderCommentsFilters(),
+			"No comments match current filters.",
+		)
 	}
-	return strings.Join(lines, "\n")
+
+	leftWidth := m.commentsTableWidth
+	if leftWidth == 0 {
+		leftWidth = int(float64(m.width) * 0.55)
+		if leftWidth < 40 {
+			leftWidth = 40
+		}
+	}
+	rightWidth := m.width - leftWidth - 1
+	if rightWidth < 24 {
+		rightWidth = 24
+	}
+
+	left := lipgloss.NewStyle().Width(leftWidth).PaddingRight(1)
+	right := lipgloss.NewStyle().Width(rightWidth)
+
+	tableView := m.commentsTable.View()
+	detailView := m.renderCommentDetail(rightWidth)
+	panes := lipgloss.JoinHorizontal(lipgloss.Top, left.Render(tableView), right.Render(detailView))
+
+	return lipgloss.JoinVertical(lipgloss.Top, m.renderCommentsFilters(), panes, "", m.renderCommentsHints())
 }
 
 func (m Model) renderVerdictView() string {
@@ -859,6 +910,248 @@ func (m Model) renderReviewStatus(heading string) string {
 		status = fmt.Sprintf("%s: %s", status, m.reviewProgress.file)
 	}
 	return status
+}
+
+func (m *Model) updateCommentsTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.commentsFilterActive {
+		switch msg.String() {
+		case "ctrl+c", "q":
+			return m, tea.Quit
+		case "esc", "enter":
+			m.commentsFilterActive = false
+			m.commentsFileFilter.Blur()
+			m.commentsTable.Focus()
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.commentsFileFilter, cmd = m.commentsFileFilter.Update(msg)
+			m.refreshCommentsTable()
+			return m, cmd
+		}
+	}
+
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "right", "l":
+		m.active = (m.active + 1) % len(m.tabs)
+		return m, nil
+	case "left", "h":
+		m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
+		return m, nil
+	case "/":
+		m.commentsFilterActive = true
+		m.commentsFileFilter.Focus()
+		m.commentsTable.Blur()
+		return m, nil
+	case "s":
+		m.cycleSeverityFilter()
+		m.refreshCommentsTable()
+		return m, nil
+	case "c":
+		m.commentsSeverityFilter = ""
+		m.commentsFileFilter.SetValue("")
+		m.refreshCommentsTable()
+		return m, nil
+	case " ":
+		m.toggleSelectedCommentPublish()
+		m.refreshCommentsTable()
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.commentsTable, cmd = m.commentsTable.Update(msg)
+	return m, cmd
+}
+
+func (m *Model) cycleSeverityFilter() {
+	sequence := []review.Severity{
+		"",
+		review.SeverityBlocker,
+		review.SeverityIssue,
+		review.SeveritySuggestion,
+		review.SeverityNit,
+	}
+	current := 0
+	for i, value := range sequence {
+		if value == m.commentsSeverityFilter {
+			current = i
+			break
+		}
+	}
+	next := (current + 1) % len(sequence)
+	m.commentsSeverityFilter = sequence[next]
+}
+
+func (m *Model) toggleSelectedCommentPublish() {
+	index, ok := m.selectedCommentIndex()
+	if !ok {
+		return
+	}
+	current := m.reviewResult.Comments[index]
+	current.Publish = !current.Publish
+	m.reviewResult.Comments[index] = current
+}
+
+func (m *Model) refreshCommentsTable() {
+	rows, indices := m.buildCommentRows()
+	m.commentsIndexMap = indices
+	m.commentsTable.SetRows(rows)
+	if len(rows) == 0 {
+		m.commentsTable.SetCursor(0)
+		return
+	}
+	if m.commentsTable.Cursor() >= len(rows) {
+		m.commentsTable.SetCursor(len(rows) - 1)
+	}
+}
+
+func (m *Model) updateCommentsTableLayout() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	leftWidth := int(float64(m.width) * 0.55)
+	if leftWidth < 40 {
+		leftWidth = 40
+	}
+	m.commentsTableWidth = leftWidth
+	height := m.height - 6
+	if height < 6 {
+		height = 6
+	}
+	m.commentsTableHeight = height
+	m.commentsTable.SetWidth(leftWidth)
+	m.commentsTable.SetHeight(height)
+
+	available := leftWidth - 26
+	if available < 20 {
+		available = 20
+	}
+	fileWidth := int(float64(available) * 0.4)
+	if fileWidth < 10 {
+		fileWidth = 10
+	}
+	titleWidth := available - fileWidth
+	if titleWidth < 10 {
+		titleWidth = 10
+	}
+	cols := []table.Column{
+		{Title: "Sev", Width: 9},
+		{Title: "File", Width: fileWidth},
+		{Title: "Line", Width: 8},
+		{Title: "Title", Width: titleWidth},
+		{Title: "Pub", Width: 5},
+	}
+	m.commentsTable.SetColumns(cols)
+}
+
+func (m Model) buildCommentRows() ([]table.Row, []int) {
+	rows := make([]table.Row, 0, len(m.reviewResult.Comments))
+	indices := make([]int, 0, len(m.reviewResult.Comments))
+	fileFilter := strings.ToLower(strings.TrimSpace(m.commentsFileFilter.Value()))
+
+	for i, comment := range m.reviewResult.Comments {
+		if m.commentsSeverityFilter != "" && comment.Severity != m.commentsSeverityFilter {
+			continue
+		}
+		if fileFilter != "" && !strings.Contains(strings.ToLower(comment.FilePath), fileFilter) {
+			continue
+		}
+		line := fmt.Sprintf("%d", comment.StartLine)
+		if comment.EndLine > comment.StartLine {
+			line = fmt.Sprintf("%d-%d", comment.StartLine, comment.EndLine)
+		}
+		publish := "yes"
+		if !comment.Publish {
+			publish = "no"
+		}
+		rows = append(rows, table.Row{
+			string(comment.Severity),
+			comment.FilePath,
+			line,
+			comment.Title,
+			publish,
+		})
+		indices = append(indices, i)
+	}
+	return rows, indices
+}
+
+func (m Model) selectedCommentIndex() (int, bool) {
+	if len(m.commentsIndexMap) == 0 {
+		return 0, false
+	}
+	cursor := m.commentsTable.Cursor()
+	if cursor < 0 || cursor >= len(m.commentsIndexMap) {
+		return 0, false
+	}
+	return m.commentsIndexMap[cursor], true
+}
+
+func (m Model) renderCommentDetail(width int) string {
+	index, ok := m.selectedCommentIndex()
+	if !ok {
+		return "No comment selected."
+	}
+	comment := m.reviewResult.Comments[index]
+	lineRange := fmt.Sprintf("%d", comment.StartLine)
+	if comment.EndLine > comment.StartLine {
+		lineRange = fmt.Sprintf("%d-%d", comment.StartLine, comment.EndLine)
+	}
+	publishLabel := "included"
+	if !comment.Publish {
+		publishLabel = "excluded"
+	}
+	lines := []string{
+		fmt.Sprintf("Severity: %s", comment.Severity),
+		fmt.Sprintf("File: %s", comment.FilePath),
+		fmt.Sprintf("Lines: %s", lineRange),
+		fmt.Sprintf("Publish: %s", publishLabel),
+		"",
+		"Title:",
+		comment.Title,
+		"",
+		"Body:",
+		comment.Body,
+	}
+	if comment.Suggestion != nil && strings.TrimSpace(*comment.Suggestion) != "" {
+		lines = append(lines, "", "Suggestion:", *comment.Suggestion)
+	}
+	if comment.Evidence != nil && strings.TrimSpace(*comment.Evidence) != "" {
+		lines = append(lines, "", "Evidence:", *comment.Evidence)
+	}
+	if len(comment.Tags) > 0 {
+		lines = append(lines, "", "Tags:", strings.Join(comment.Tags, ", "))
+	}
+	content := strings.Join(lines, "\n")
+	if width <= 0 {
+		return content
+	}
+	return lipgloss.NewStyle().Width(width).Render(content)
+}
+
+func (m Model) renderCommentsFilters() string {
+	severity := "ALL"
+	if m.commentsSeverityFilter != "" {
+		severity = string(m.commentsSeverityFilter)
+	}
+	fileValue := strings.TrimSpace(m.commentsFileFilter.Value())
+	if m.commentsFilterActive {
+		fileValue = m.commentsFileFilter.View()
+	} else if fileValue == "" {
+		fileValue = "(none)"
+	}
+	return fmt.Sprintf("Severity: %s | File: %s", severity, fileValue)
+}
+
+func (m Model) renderCommentsHints() string {
+	hints := []string{
+		"↑/↓ to move, Space to toggle publish, s to cycle severity, / to filter file, c to clear filters.",
+	}
+	if m.commentsFilterActive {
+		hints = []string{"Typing filter... Enter/Esc to apply."}
+	}
+	return strings.Join(hints, "\n")
 }
 
 func (m Model) selectedGuidelines() []string {

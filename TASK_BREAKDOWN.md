@@ -26,9 +26,9 @@
 - [x] Merge generated comments, dedupe via stable hash, and build verdict
 
 ## Milestone 5 — Comments triage UX
-- [ ] Implement Comments tab table with filters (severity, file)
-- [ ] Add detail pane showing body, suggestion, evidence
-- [ ] Allow toggling publish include/exclude per comment
+- [x] Implement Comments tab table with filters (severity, file)
+- [x] Add detail pane showing body, suggestion, evidence
+- [x] Allow toggling publish include/exclude per comment
 - [ ] Optional: add comment edit modal for title/body/suggestion
 
 ## Milestone 6 — Publish to Bitbucket Cloud
