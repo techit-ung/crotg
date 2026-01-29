@@ -33,7 +33,7 @@ const verdictSchema = `{
 
 func BuildFileReviewMessages(guidelines, diff string) []llm.Message {
 	system := strings.Join([]string{
-		"You are a meticulous code reviewer.",
+		"You are a expert senior software engineer. You are tasked to review the code",
 		"Follow the provided guidelines.",
 		"Return JSON only. Do not include markdown fences.",
 	}, " ")
@@ -60,7 +60,7 @@ func BuildFileReviewMessages(guidelines, diff string) []llm.Message {
 
 func BuildVerdictMessages(guidelines string, comments []Comment, stats Stats, ruleDecision Decision) []llm.Message {
 	system := strings.Join([]string{
-		"You are a meticulous code reviewer.",
+		"You are a expert senior software engineer. You are tasked to review the code",
 		"Return JSON only. Do not include markdown fences.",
 	}, " ")
 
