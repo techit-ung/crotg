@@ -29,6 +29,7 @@
 - [x] Implement Comments tab table with filters (severity, file)
 - [x] Add detail pane showing body, suggestion, evidence
 - [x] Allow toggling publish include/exclude per comment
+- [x] Add independent pane scrolling + focus hotkey for Diff/Comments tabs
 - [ ] Optional: add comment edit modal for title/body/suggestion
 
 ## Milestone 6 — Publish to Bitbucket Cloud

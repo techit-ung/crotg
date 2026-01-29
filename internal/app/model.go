@@ -70,6 +70,9 @@ type Model struct {
 	commentsSeverityFilter review.Severity
 	commentsTableWidth     int
 	commentsTableHeight    int
+	commentsDetailView     viewport.Model
+	commentsPanelFocus     panelFocus
+	diffPanelFocus         panelFocus
 }
 
 func NewModel() Model {
@@ -88,6 +91,7 @@ func NewModel() Model {
 	commentsFileFilter := textinput.New()
 	commentsFileFilter.Placeholder = "Filter by file path"
 	diffView := viewport.New(0, 0)
+	commentsDetailView := viewport.New(0, 0)
 	commentsTable := table.New(
 		table.WithColumns([]table.Column{
 			{Title: "Sev", Width: 9},
@@ -115,8 +119,11 @@ func NewModel() Model {
 		branchFilterInput:  branchFilterInput,
 		modelInput:         modelInput,
 		diffView:           diffView,
+		diffPanelFocus:     panelFocusLeft,
 		commentsFileFilter: commentsFileFilter,
 		commentsTable:      commentsTable,
+		commentsDetailView: commentsDetailView,
+		commentsPanelFocus: panelFocusLeft,
 		modelOptions: []string{
 			review.DefaultModel,
 			"Custom...",
@@ -207,6 +214,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.inWizard {
 			return m.updateWizard(msg)
 		}
+		if m.tabs[m.active] == "Diff" {
+			return m.updateDiffTab(msg)
+		}
 		if m.tabs[m.active] == "Comments" {
 			return m.updateCommentsTab(msg)
 		}
@@ -219,28 +229,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "left", "h":
 			m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
 			return m, nil
-		case "up", "k":
-			if m.tabs[m.active] == "Diff" {
-				m.diffFile = clamp(m.diffFile-1, 0, len(m.diffFiles)-1)
-				m.updateDiffViewportContent()
-				return m, nil
-			}
-		case "down", "j":
-			if m.tabs[m.active] == "Diff" {
-				m.diffFile = clamp(m.diffFile+1, 0, len(m.diffFiles)-1)
-				m.updateDiffViewportContent()
-				return m, nil
-			}
-		case "pgdown", "ctrl+d":
-			if m.tabs[m.active] == "Diff" {
-				m.diffView.PageDown()
-				return m, nil
-			}
-		case "pgup", "ctrl+u":
-			if m.tabs[m.active] == "Diff" {
-				m.diffView.PageUp()
-				return m, nil
-			}
 		}
 	}
 
@@ -290,6 +278,13 @@ const (
 	wizardGuidelinePath
 	wizardFreeGuideline
 	wizardOpenRouterKey
+)
+
+type panelFocus int
+
+const (
+	panelFocusLeft panelFocus = iota
+	panelFocusRight
 )
 
 type configLoadedMsg struct {
@@ -995,23 +990,13 @@ func (m Model) renderCommentsView() string {
 		)
 	}
 
-	leftWidth := m.commentsTableWidth
-	if leftWidth == 0 {
-		leftWidth = int(float64(m.width) * 0.55)
-		if leftWidth < 40 {
-			leftWidth = 40
-		}
-	}
-	rightWidth := m.width - leftWidth - 1
-	if rightWidth < 24 {
-		rightWidth = 24
-	}
+	leftWidth, rightWidth := m.commentsPaneWidths()
 
 	left := lipgloss.NewStyle().Width(leftWidth).PaddingRight(1)
 	right := lipgloss.NewStyle().Width(rightWidth)
 
 	tableView := m.commentsTable.View()
-	detailView := m.renderCommentDetail(rightWidth)
+	detailView := m.commentsDetailView.View()
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, left.Render(tableView), right.Render(detailView))
 
 	return lipgloss.JoinVertical(lipgloss.Top, m.renderCommentsWarnings(), m.renderCommentsFilters(), panes, "", m.renderCommentsHints())
@@ -1123,6 +1108,9 @@ func (m *Model) updateCommentsTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "left", "h":
 		m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
 		return m, nil
+	case "tab":
+		m.toggleCommentsPanelFocus()
+		return m, nil
 	case "/":
 		m.commentsFilterActive = true
 		m.commentsFileFilter.Focus()
@@ -1138,13 +1126,26 @@ func (m *Model) updateCommentsTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.refreshCommentsTable()
 		return m, nil
 	case " ":
-		m.toggleSelectedCommentPublish()
-		m.refreshCommentsTable()
-		return m, nil
+		if m.commentsPanelFocus == panelFocusLeft {
+			m.toggleSelectedCommentPublish()
+			m.refreshCommentsTable()
+			return m, nil
+		}
 	}
 
+	if m.commentsPanelFocus == panelFocusRight {
+		var cmd tea.Cmd
+		m.commentsDetailView, cmd = m.commentsDetailView.Update(msg)
+		return m, cmd
+	}
+
+	beforeIndex, _ := m.selectedCommentIndex()
 	var cmd tea.Cmd
 	m.commentsTable, cmd = m.commentsTable.Update(msg)
+	afterIndex, _ := m.selectedCommentIndex()
+	if beforeIndex != afterIndex {
+		m.updateCommentsDetailContent(true)
+	}
 	return m, cmd
 }
 
@@ -1183,21 +1184,20 @@ func (m *Model) refreshCommentsTable() {
 	m.commentsTable.SetRows(rows)
 	if len(rows) == 0 {
 		m.commentsTable.SetCursor(0)
+		m.updateCommentsDetailContent(true)
 		return
 	}
 	if m.commentsTable.Cursor() >= len(rows) {
 		m.commentsTable.SetCursor(len(rows) - 1)
 	}
+	m.updateCommentsDetailContent(true)
 }
 
 func (m *Model) updateCommentsTableLayout() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	leftWidth := int(float64(m.width) * 0.55)
-	if leftWidth < 40 {
-		leftWidth = 40
-	}
+	leftWidth, rightWidth := m.commentsPaneWidths()
 	m.commentsTableWidth = leftWidth
 	height := m.height - 6
 	if height < 6 {
@@ -1206,6 +1206,9 @@ func (m *Model) updateCommentsTableLayout() {
 	m.commentsTableHeight = height
 	m.commentsTable.SetWidth(leftWidth)
 	m.commentsTable.SetHeight(height)
+	m.commentsDetailView.Width = rightWidth
+	m.commentsDetailView.Height = height
+	m.updateCommentsDetailContent(false)
 
 	available := leftWidth - 26
 	if available < 20 {
@@ -1272,7 +1275,7 @@ func (m Model) selectedCommentIndex() (int, bool) {
 	return m.commentsIndexMap[cursor], true
 }
 
-func (m Model) renderCommentDetail(width int) string {
+func (m Model) renderCommentDetailContent(width int) string {
 	index, ok := m.selectedCommentIndex()
 	if !ok {
 		return "No comment selected."
@@ -1337,7 +1340,7 @@ func (m Model) renderCommentsWarnings() string {
 
 func (m Model) renderCommentsHints() string {
 	hints := []string{
-		"↑/↓ to move, Space to toggle publish, s to cycle severity, / to filter file, c to clear filters.",
+		"↑/↓ to move, Space to toggle publish, s to cycle severity, / to filter file, c to clear filters, Tab to switch panel.",
 	}
 	if m.commentsFilterActive {
 		hints = []string{"Typing filter... Enter/Esc to apply."}
@@ -1457,6 +1460,83 @@ func shortenMessage(message string, width int) string {
 		return trimmed[:width]
 	}
 	return trimmed[:width-3] + "..."
+}
+
+func (m *Model) updateCommentsDetailContent(reset bool) {
+	width := m.commentsDetailView.Width
+	m.commentsDetailView.SetContent(m.renderCommentDetailContent(width))
+	if reset {
+		m.commentsDetailView.SetYOffset(0)
+	}
+}
+
+func (m Model) commentsPaneWidths() (int, int) {
+	leftWidth := int(float64(m.width) * 0.55)
+	if leftWidth < 40 {
+		leftWidth = 40
+	}
+	rightWidth := m.width - leftWidth - 1
+	if rightWidth < 24 {
+		rightWidth = 24
+	}
+	return leftWidth, rightWidth
+}
+
+func (m *Model) toggleCommentsPanelFocus() {
+	if m.commentsPanelFocus == panelFocusLeft {
+		m.commentsPanelFocus = panelFocusRight
+		m.commentsTable.Blur()
+		return
+	}
+	m.commentsPanelFocus = panelFocusLeft
+	m.commentsTable.Focus()
+}
+
+func (m *Model) updateDiffTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "right", "l":
+		m.active = (m.active + 1) % len(m.tabs)
+		return m, nil
+	case "left", "h":
+		m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
+		return m, nil
+	case "tab":
+		if m.diffPanelFocus == panelFocusLeft {
+			m.diffPanelFocus = panelFocusRight
+		} else {
+			m.diffPanelFocus = panelFocusLeft
+		}
+		return m, nil
+	}
+
+	if m.diffPanelFocus == panelFocusRight {
+		switch msg.String() {
+		case "pgdown", "ctrl+d":
+			m.diffView.PageDown()
+			return m, nil
+		case "pgup", "ctrl+u":
+			m.diffView.PageUp()
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.diffView, cmd = m.diffView.Update(msg)
+		return m, cmd
+	}
+
+	switch msg.String() {
+	case "up", "k":
+		m.diffFile = clamp(m.diffFile-1, 0, len(m.diffFiles)-1)
+		m.updateDiffViewportContent()
+		return m, nil
+	case "down", "j":
+		m.diffFile = clamp(m.diffFile+1, 0, len(m.diffFiles)-1)
+		m.updateDiffViewportContent()
+		return m, nil
+	}
+
+	return m, nil
 }
 
 func (m Model) maybeStartReview() tea.Cmd {

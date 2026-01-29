@@ -6,6 +6,7 @@
 - Milestone 3 complete: guideline scanning, multi-select, free-text input, and guideline hash display.
 - Milestone 4 complete: OpenRouter client, prompt builders, per-file review chunking, comment dedupe, verdict generation.
 - Milestone 5 complete: comments table with filters, detail pane, and publish toggles.
+- Milestone 5 update: Diff/Comments panes now scroll independently with a focus toggle.
 
 ## What was implemented
 - TUI entry point: `cmd/reviewer/main.go`
@@ -22,6 +23,7 @@
 - Review engine with prompt builders, per-file chunking, comment parsing/dedupe, verdict logic: `internal/review/engine.go`, `internal/review/prompts.go`, `internal/review/types.go`, `internal/review/diff_render.go`
 - Comments + Verdict views now render basic review output and progress in `internal/app/model.go`
 - Comments tab: table view, severity/file filters, detail pane, and publish include/exclude toggles in `internal/app/model.go`
+- Added independent scrolling viewports for Comments detail pane and Diff pane focus switching via Tab in `internal/app/model.go`.
 - Added model selection step to the wizard, improved review progress status (success/failure), warning for dropped comments, and LLM request logging to a cache file.
 - Dependencies: Bubble Tea, Bubbles, Lip Gloss added to `go.mod`/`go.sum`
 
