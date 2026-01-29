@@ -22,7 +22,7 @@
 - Review engine with prompt builders, per-file chunking, comment parsing/dedupe, verdict logic: `internal/review/engine.go`, `internal/review/prompts.go`, `internal/review/types.go`, `internal/review/diff_render.go`
 - Comments + Verdict views now render basic review output and progress in `internal/app/model.go`
 - Comments tab: table view, severity/file filters, detail pane, and publish include/exclude toggles in `internal/app/model.go`
-- Added model selection step to the wizard, improved review progress status (success/failure), and warning for dropped comments.
+- Added model selection step to the wizard, improved review progress status (success/failure), warning for dropped comments, and LLM request logging to a cache file.
 - Dependencies: Bubble Tea, Bubbles, Lip Gloss added to `go.mod`/`go.sum`
 
 ## How to run

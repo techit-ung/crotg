@@ -61,6 +61,7 @@ func (c *Client) ChatCompletion(ctx context.Context, req ChatRequest) (string, e
 	}
 
 	endpoint := c.baseURL + "/chat/completions"
+	logRequest(endpoint, body)
 	var lastErr error
 	for attempt := 0; attempt < 3; attempt++ {
 		content, retry, err := c.doRequest(ctx, endpoint, body)

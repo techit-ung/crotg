@@ -1460,7 +1460,7 @@ func shortenMessage(message string, width int) string {
 }
 
 func (m Model) maybeStartReview() tea.Cmd {
-	if m.reviewRunning || m.reviewResult.GeneratedAt.Unix() != 0 {
+	if m.reviewRunning || !m.reviewResult.GeneratedAt.IsZero() {
 		return nil
 	}
 	if len(m.diffFiles) == 0 || m.diffErr != nil {
@@ -1482,6 +1482,7 @@ func startReviewCmd(diffFiles []git.DiffFile, cfg config.Config, guidelineHash s
 		updates := make(chan tea.Msg)
 		go func() {
 			defer close(updates)
+			updates <- reviewProgressMsg{completed: 0, total: len(diffFiles), failed: 0, file: "starting"}
 			client := llm.NewClient(apiKey, config.OpenRouterBaseURL())
 			ctx := context.Background()
 			result, err := review.Run(ctx, client, diffFiles, review.RunOptions{
