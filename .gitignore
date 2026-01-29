@@ -1,0 +1,27 @@
+# Binaries and build artifacts
+/bin/
+/build/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+
+# Go module caches
+/vendor/
+*.out
+coverage.*
+*.cov
+
+# IDE and editor junk
+.DS_Store
+*.swp
+*.swo
+.idea/
+.vscode/
+
+# Go workspace files
+go.work
+go.work.sum
