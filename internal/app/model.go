@@ -11,6 +11,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -40,6 +41,7 @@ type Model struct {
 	diffFiles []git.DiffFile
 	diffErr   error
 	diffFile  int
+	diffView  viewport.Model
 
 	guidelineOptions  []string
 	guidelineSelected map[string]bool
@@ -49,8 +51,11 @@ type Model struct {
 	pathInput         textinput.Model
 	freeTextInput     textinput.Model
 	keyInput          textinput.Model
+	modelInput        textinput.Model
 	openRouterKey     string
 	branchFilterInput textinput.Model
+	modelOptions      []string
+	modelCursor       int
 
 	reviewRunning  bool
 	reviewErr      error
@@ -78,8 +83,11 @@ func NewModel() Model {
 	keyInput.EchoCharacter = '*'
 	branchFilterInput := textinput.New()
 	branchFilterInput.Placeholder = "Filter branches"
+	modelInput := textinput.New()
+	modelInput.Placeholder = "Model (e.g. openai/gpt-4o-mini)"
 	commentsFileFilter := textinput.New()
 	commentsFileFilter.Placeholder = "Filter by file path"
+	diffView := viewport.New(0, 0)
 	commentsTable := table.New(
 		table.WithColumns([]table.Column{
 			{Title: "Sev", Width: 9},
@@ -105,8 +113,14 @@ func NewModel() Model {
 		freeTextInput:      freeTextInput,
 		keyInput:           keyInput,
 		branchFilterInput:  branchFilterInput,
+		modelInput:         modelInput,
+		diffView:           diffView,
 		commentsFileFilter: commentsFileFilter,
 		commentsTable:      commentsTable,
+		modelOptions: []string{
+			review.DefaultModel,
+			"Custom...",
+		},
 	}
 }
 
@@ -126,6 +140,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diffFiles = msg.files
 		m.diffErr = msg.err
 		if msg.err == nil {
+			m.diffFile = 0
+			m.updateDiffViewportContent()
+			m.updateDiffViewportLayout()
 			return m, m.maybeStartReview()
 		}
 		return m, nil
@@ -183,6 +200,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.updateDiffViewportLayout()
 		m.updateCommentsTableLayout()
 		return m, nil
 	case tea.KeyMsg:
@@ -204,11 +222,23 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			if m.tabs[m.active] == "Diff" {
 				m.diffFile = clamp(m.diffFile-1, 0, len(m.diffFiles)-1)
+				m.updateDiffViewportContent()
 				return m, nil
 			}
 		case "down", "j":
 			if m.tabs[m.active] == "Diff" {
 				m.diffFile = clamp(m.diffFile+1, 0, len(m.diffFiles)-1)
+				m.updateDiffViewportContent()
+				return m, nil
+			}
+		case "pgdown", "ctrl+d":
+			if m.tabs[m.active] == "Diff" {
+				m.diffView.PageDown()
+				return m, nil
+			}
+		case "pgup", "ctrl+u":
+			if m.tabs[m.active] == "Diff" {
+				m.diffView.PageUp()
 				return m, nil
 			}
 		}
@@ -254,6 +284,8 @@ const (
 	wizardRepo wizardStep = iota
 	wizardBaseBranch
 	wizardBranch
+	wizardModel
+	wizardModelInput
 	wizardGuidelines
 	wizardGuidelinePath
 	wizardFreeGuideline
@@ -298,7 +330,9 @@ type reviewStartedMsg struct {
 type reviewProgressMsg struct {
 	completed int
 	total     int
+	failed    int
 	file      string
+	lastError string
 }
 
 type reviewCompletedMsg struct {
@@ -436,15 +470,69 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			m.branch = filtered[m.cursor]
-			m.wizardStep = wizardGuidelines
-			m.guidelineCursor = 0
-			m.guidelineErr = nil
+			m.wizardStep = wizardModel
+			m.modelCursor = m.initialModelIndex(m.cfg.LastModel)
 			m.branchFilterInput.Blur()
-			return m, scanGuidelinesCmd(m.repoRoot, m.cfg.Guidelines)
+			return m, nil
 		default:
 			var cmd tea.Cmd
 			m.branchFilterInput, cmd = m.branchFilterInput.Update(msg)
 			m.cursor = 0
+			return m, cmd
+		}
+	case wizardModel:
+		switch msg.String() {
+		case "up", "k":
+			m.modelCursor = clamp(m.modelCursor-1, 0, len(m.modelOptions)-1)
+		case "down", "j":
+			m.modelCursor = clamp(m.modelCursor+1, 0, len(m.modelOptions)-1)
+		case "b":
+			m.wizardStep = wizardModel
+			m.modelCursor = m.initialModelIndex(m.cfg.LastModel)
+			m.branchFilterInput.SetValue("")
+			m.branchFilterInput.SetCursor(0)
+			m.branchFilterInput.Focus()
+		case "enter":
+			if len(m.modelOptions) == 0 {
+				return m, nil
+			}
+			selected := m.modelOptions[m.modelCursor]
+			if selected == "Custom..." {
+				m.wizardStep = wizardModelInput
+				m.modelInput.SetValue(m.cfg.LastModel)
+				m.modelInput.Focus()
+				return m, nil
+			}
+			m.cfg.LastModel = selected
+			m.wizardStep = wizardGuidelines
+			m.guidelineCursor = 0
+			m.guidelineErr = nil
+			return m, scanGuidelinesCmd(m.repoRoot, m.cfg.Guidelines)
+		}
+	case wizardModelInput:
+		switch msg.String() {
+		case "esc":
+			m.modelInput.Blur()
+			m.wizardStep = wizardModel
+			return m, nil
+		case "b":
+			m.modelInput.Blur()
+			m.wizardStep = wizardModel
+			return m, nil
+		case "enter":
+			value := strings.TrimSpace(m.modelInput.Value())
+			if value == "" {
+				return m, nil
+			}
+			m.cfg.LastModel = value
+			m.modelInput.Blur()
+			m.wizardStep = wizardGuidelines
+			m.guidelineCursor = 0
+			m.guidelineErr = nil
+			return m, scanGuidelinesCmd(m.repoRoot, m.cfg.Guidelines)
+		default:
+			var cmd tea.Cmd
+			m.modelInput, cmd = m.modelInput.Update(msg)
 			return m, cmd
 		}
 	case wizardGuidelines:
@@ -591,6 +679,10 @@ func (m Model) renderWizard() string {
 		return m.renderBranchPicker("Select base branch", m.baseBranch)
 	case wizardBranch:
 		return m.renderBranchPicker("Select review branch", m.branch)
+	case wizardModel:
+		return m.renderModelPicker()
+	case wizardModelInput:
+		return m.renderModelInput()
 	case wizardGuidelines:
 		return m.renderGuidelinePicker()
 	case wizardGuidelinePath:
@@ -627,27 +719,29 @@ func (m Model) renderDiffView() string {
 		return "No diff files to display."
 	}
 
-	leftWidth := int(float64(m.width) * 0.3)
-	if leftWidth < 20 {
-		leftWidth = 20
-	}
-	rightWidth := m.width - leftWidth - 1
-	if rightWidth < 20 {
-		rightWidth = 20
-	}
+	leftWidth, rightWidth := m.diffPaneWidths()
+	height := m.diffPaneHeight()
+	m.diffView.Width = rightWidth
+	m.diffView.Height = height
 
 	left := lipgloss.NewStyle().Width(leftWidth).PaddingRight(1)
 	right := lipgloss.NewStyle().Width(rightWidth)
 
-	fileList := m.renderFileList(leftWidth)
-	diffPane := m.renderFileDiff(rightWidth)
+	fileList := m.renderFileList(height)
+	diffPane := m.diffView.View()
 
 	return lipgloss.JoinHorizontal(lipgloss.Top, left.Render(fileList), right.Render(diffPane))
 }
 
-func (m Model) renderFileList(width int) string {
-	lines := make([]string, 0, len(m.diffFiles))
-	for i, file := range m.diffFiles {
+func (m Model) renderFileList(height int) string {
+	visibleCount := height
+	if visibleCount < 5 {
+		visibleCount = 5
+	}
+	start, end := clampWindow(m.diffFile, len(m.diffFiles), visibleCount)
+	lines := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		file := m.diffFiles[i]
 		cursor := "  "
 		if i == m.diffFile {
 			cursor = "> "
@@ -658,7 +752,7 @@ func (m Model) renderFileList(width int) string {
 	return strings.Join(lines, "\n")
 }
 
-func (m Model) renderFileDiff(width int) string {
+func (m Model) renderFileDiff() string {
 	if m.diffFile < 0 || m.diffFile >= len(m.diffFiles) {
 		return ""
 	}
@@ -739,6 +833,46 @@ func (m Model) initialBranchIndex(branch string) int {
 		}
 	}
 	return 0
+}
+
+func (m Model) initialModelIndex(model string) int {
+	if model == "" {
+		return 0
+	}
+	for i, option := range m.modelOptions {
+		if option == model {
+			return i
+		}
+	}
+	return len(m.modelOptions) - 1
+}
+
+func (m Model) renderModelPicker() string {
+	header := lipgloss.NewStyle().Bold(true).Render("Select model")
+	if len(m.modelOptions) == 0 {
+		return lipgloss.JoinVertical(lipgloss.Top, header, "No models configured.")
+	}
+	lines := make([]string, 0, len(m.modelOptions))
+	for i, option := range m.modelOptions {
+		cursor := "  "
+		if i == m.modelCursor {
+			cursor = "> "
+		}
+		label := option
+		if option == m.cfg.LastModel {
+			label = fmt.Sprintf("%s (current)", option)
+		}
+		lines = append(lines, cursor+label)
+	}
+	hint := "Use ↑/↓, Enter to select, b to go back."
+	return lipgloss.JoinVertical(lipgloss.Top, header, strings.Join(lines, "\n"), "", hint)
+}
+
+func (m Model) renderModelInput() string {
+	header := lipgloss.NewStyle().Bold(true).Render("Custom model")
+	body := m.modelInput.View()
+	hint := "Enter to continue, b to go back."
+	return lipgloss.JoinVertical(lipgloss.Top, header, body, "", hint)
 }
 
 func (m Model) renderGuidelinePicker() string {
@@ -843,11 +977,19 @@ func (m Model) renderCommentsView() string {
 		return fmt.Sprintf("Review error: %s", m.reviewErr)
 	}
 	if len(m.reviewResult.Comments) == 0 {
+		if m.reviewResult.Dropped > 0 {
+			return lipgloss.JoinVertical(
+				lipgloss.Top,
+				m.renderCommentsWarnings(),
+				"No comments generated.",
+			)
+		}
 		return "No comments generated."
 	}
 	if len(m.commentsIndexMap) == 0 {
 		return lipgloss.JoinVertical(
 			lipgloss.Top,
+			m.renderCommentsWarnings(),
 			m.renderCommentsFilters(),
 			"No comments match current filters.",
 		)
@@ -872,7 +1014,7 @@ func (m Model) renderCommentsView() string {
 	detailView := m.renderCommentDetail(rightWidth)
 	panes := lipgloss.JoinHorizontal(lipgloss.Top, left.Render(tableView), right.Render(detailView))
 
-	return lipgloss.JoinVertical(lipgloss.Top, m.renderCommentsFilters(), panes, "", m.renderCommentsHints())
+	return lipgloss.JoinVertical(lipgloss.Top, m.renderCommentsWarnings(), m.renderCommentsFilters(), panes, "", m.renderCommentsHints())
 }
 
 func (m Model) renderVerdictView() string {
@@ -905,11 +1047,53 @@ func (m Model) renderReviewStatus(heading string) string {
 	if m.reviewProgress.total == 0 {
 		return heading
 	}
-	status := fmt.Sprintf("%s (%d/%d)", heading, m.reviewProgress.completed, m.reviewProgress.total)
+	status := fmt.Sprintf("%s (%d/%d, failed %d)", heading, m.reviewProgress.completed, m.reviewProgress.total, m.reviewProgress.failed)
 	if m.reviewProgress.file != "" {
-		status = fmt.Sprintf("%s: %s", status, m.reviewProgress.file)
+		last := "ok"
+		if m.reviewProgress.lastError != "" {
+			last = "error"
+		}
+		status = fmt.Sprintf("%s: %s (%s)", status, m.reviewProgress.file, last)
+		if m.reviewProgress.lastError != "" {
+			status = fmt.Sprintf("%s - %s", status, shortenMessage(m.reviewProgress.lastError, m.width-2))
+		}
 	}
 	return status
+}
+
+func (m *Model) updateDiffViewportLayout() {
+	if m.width == 0 || m.height == 0 {
+		return
+	}
+	_, rightWidth := m.diffPaneWidths()
+	m.diffView.Width = rightWidth
+	m.diffView.Height = m.diffPaneHeight()
+	m.diffView.SetYOffset(m.diffView.YOffset)
+}
+
+func (m *Model) updateDiffViewportContent() {
+	m.diffView.SetContent(m.renderFileDiff())
+	m.diffView.SetYOffset(0)
+}
+
+func (m Model) diffPaneWidths() (int, int) {
+	leftWidth := int(float64(m.width) * 0.3)
+	if leftWidth < 20 {
+		leftWidth = 20
+	}
+	rightWidth := m.width - leftWidth - 1
+	if rightWidth < 20 {
+		rightWidth = 20
+	}
+	return leftWidth, rightWidth
+}
+
+func (m Model) diffPaneHeight() int {
+	height := m.height - 1
+	if height < 5 {
+		height = 5
+	}
+	return height
 }
 
 func (m *Model) updateCommentsTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -1144,6 +1328,13 @@ func (m Model) renderCommentsFilters() string {
 	return fmt.Sprintf("Severity: %s | File: %s", severity, fileValue)
 }
 
+func (m Model) renderCommentsWarnings() string {
+	if m.reviewResult.Dropped <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("Warning: %d comment(s) dropped due to missing file/line/title/body.", m.reviewResult.Dropped)
+}
+
 func (m Model) renderCommentsHints() string {
 	hints := []string{
 		"↑/↓ to move, Space to toggle publish, s to cycle severity, / to filter file, c to clear filters.",
@@ -1257,6 +1448,17 @@ func clampWindow(cursor, total, window int) (int, int) {
 	return start, end
 }
 
+func shortenMessage(message string, width int) string {
+	trimmed := strings.TrimSpace(message)
+	if width <= 0 || len(trimmed) <= width {
+		return trimmed
+	}
+	if width <= 3 {
+		return trimmed[:width]
+	}
+	return trimmed[:width-3] + "..."
+}
+
 func (m Model) maybeStartReview() tea.Cmd {
 	if m.reviewRunning || m.reviewResult.GeneratedAt.Unix() != 0 {
 		return nil
@@ -1288,7 +1490,13 @@ func startReviewCmd(diffFiles []git.DiffFile, cfg config.Config, guidelineHash s
 				FreeText:       cfg.FreeGuideline,
 				GuidelineHash:  guidelineHash,
 			}, func(progress review.Progress) {
-				updates <- reviewProgressMsg{completed: progress.Completed, total: progress.Total, file: progress.CurrentFile}
+				updates <- reviewProgressMsg{
+					completed: progress.Completed,
+					total:     progress.Total,
+					failed:    progress.Failed,
+					file:      progress.CurrentFile,
+					lastError: progress.LastError,
+				}
 			})
 			updates <- reviewCompletedMsg{result: result, err: err}
 		}()

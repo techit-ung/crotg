@@ -57,6 +57,7 @@ type Result struct {
 	Verdict       Verdict
 	Model         string
 	GuidelineHash string
+	Dropped       int
 	GeneratedAt   time.Time
 }
 

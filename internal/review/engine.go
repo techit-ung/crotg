@@ -17,7 +17,9 @@ const DefaultModel = "openai/gpt-4o-mini"
 type Progress struct {
 	Completed   int
 	Total       int
+	Failed      int
 	CurrentFile string
+	LastError   string
 }
 
 type RunOptions struct {
@@ -32,6 +34,7 @@ type fileReviewResult struct {
 	comments []Comment
 	err      error
 	filePath string
+	dropped  int
 }
 
 func Run(ctx context.Context, client *llm.Client, files []git.DiffFile, opts RunOptions, progress func(Progress)) (Result, error) {
@@ -78,8 +81,8 @@ func Run(ctx context.Context, client *llm.Client, files []git.DiffFile, opts Run
 				continue
 			}
 
-			comments, err := parseFileComments(content)
-			results <- fileReviewResult{comments: comments, err: err, filePath: file.Path}
+			comments, dropped, err := parseFileComments(content)
+			results <- fileReviewResult{comments: comments, err: err, filePath: file.Path, dropped: dropped}
 		}
 	}
 
@@ -96,18 +99,34 @@ func Run(ctx context.Context, client *llm.Client, files []git.DiffFile, opts Run
 
 	collected := make([]Comment, 0)
 	var firstErr error
+	droppedTotal := 0
 
 	total := len(files)
 	completed := 0
+	failed := 0
 	for completed < total {
 		result := <-results
 		completed++
+		if result.err != nil {
+			failed++
+		}
 		if progress != nil {
-			progress(Progress{Completed: completed, Total: total, CurrentFile: result.filePath})
+			lastError := ""
+			if result.err != nil {
+				lastError = result.err.Error()
+			}
+			progress(Progress{
+				Completed:   completed,
+				Total:       total,
+				Failed:      failed,
+				CurrentFile: result.filePath,
+				LastError:   lastError,
+			})
 		}
 		if result.err != nil && firstErr == nil {
 			firstErr = fmt.Errorf("review failed for %s: %w", result.filePath, result.err)
 		}
+		droppedTotal += result.dropped
 		collected = append(collected, result.comments...)
 	}
 
@@ -147,6 +166,7 @@ func Run(ctx context.Context, client *llm.Client, files []git.DiffFile, opts Run
 		Verdict:       verdict,
 		Model:         opts.Model,
 		GuidelineHash: opts.GuidelineHash,
+		Dropped:       droppedTotal,
 		GeneratedAt:   time.Now(),
 	}, nil
 }
@@ -170,7 +190,7 @@ func dedupeComments(comments []Comment) []Comment {
 	return deduped
 }
 
-func parseFileComments(content string) ([]Comment, error) {
+func parseFileComments(content string) ([]Comment, int, error) {
 	payload := stripCodeFence(content)
 	var decoded struct {
 		Comments []struct {
@@ -187,10 +207,11 @@ func parseFileComments(content string) ([]Comment, error) {
 	}
 
 	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 
 	comments := make([]Comment, 0, len(decoded.Comments))
+	dropped := 0
 	for _, item := range decoded.Comments {
 		comment := Comment{
 			FilePath:   strings.TrimSpace(item.FilePath),
@@ -205,15 +226,17 @@ func parseFileComments(content string) ([]Comment, error) {
 			Publish:    true,
 		}
 		if comment.StartLine <= 0 || comment.EndLine <= 0 || comment.EndLine < comment.StartLine {
+			dropped++
 			continue
 		}
 		if comment.FilePath == "" || comment.Title == "" || comment.Body == "" {
+			dropped++
 			continue
 		}
 		comments = append(comments, comment)
 	}
 
-	return comments, nil
+	return comments, dropped, nil
 }
 
 func generateVerdict(ctx context.Context, client *llm.Client, model, guidelines string, comments []Comment, stats Stats, ruleDecision Decision) (Verdict, error) {
