@@ -2,10 +2,9 @@
 
 ## Status
 - Milestone 1 complete: Go module initialized, Bubble Tea scaffolded, config load/save, env helpers.
-- Milestone 2 in progress: git repo detection, branch listing, and diff generation helpers implemented (tests included).
-- Wizard flow now detects repo and lets users select base/branch, persisting selections to config.
-- Milestone 2 complete: diff parsing types and Diff tab (file list + diff pane) wired to generated diff.
+- Milestone 2 complete: repo detection, branch selection, diff generation/parsing, Diff tab UI.
 - Milestone 3 complete: guideline scanning, multi-select, free-text input, and guideline hash display.
+- Milestone 4 complete: OpenRouter client, prompt builders, per-file review chunking, comment dedupe, verdict generation.
 
 ## What was implemented
 - TUI entry point: `cmd/reviewer/main.go`
@@ -18,13 +17,16 @@
 - Diff tab UI: file list + diff pane in `internal/app/model.go`
 - Guideline scanning + hashing: `internal/review/guidelines.go`
 - Guideline selection wizard (multi-select, add path, free-text input) + hash display: `internal/app/model.go`
+- OpenRouter client + retries: `internal/llm/client.go`
+- Review engine with prompt builders, per-file chunking, comment parsing/dedupe, verdict logic: `internal/review/engine.go`, `internal/review/prompts.go`, `internal/review/types.go`, `internal/review/diff_render.go`
+- Comments + Verdict views now render basic review output and progress in `internal/app/model.go`
 - Dependencies: Bubble Tea, Bubbles, Lip Gloss added to `go.mod`/`go.sum`
 
 ## How to run
 - `go run ./cmd/reviewer`
 
-## Suggested next step (Milestone 2)
-- Start Milestone 3: guideline file scanning and multi-select picker in the wizard.
+## Suggested next step (Milestone 5)
+- Build Comments tab table with filters and detail pane, plus publish include/exclude toggles.
 
 ## Notes
 - Config is stored under `~/.config/reviewer/config.json` unless `CODE_REVIEWER_CONFIG_DIR` is set.

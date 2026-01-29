@@ -104,3 +104,33 @@ func isRegularFile(path string) bool {
 	}
 	return info.Mode().IsRegular()
 }
+
+func LoadGuidelines(paths []string, freeText string) (string, error) {
+	paths = append([]string(nil), paths...)
+	sort.Strings(paths)
+
+	var builder strings.Builder
+	for _, path := range paths {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return "", err
+		}
+		if builder.Len() > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString("# ")
+		builder.WriteString(path)
+		builder.WriteString("\n")
+		builder.WriteString(strings.TrimSpace(string(data)))
+	}
+
+	if strings.TrimSpace(freeText) != "" {
+		if builder.Len() > 0 {
+			builder.WriteString("\n\n")
+		}
+		builder.WriteString("# Additional guidance\n")
+		builder.WriteString(strings.TrimSpace(freeText))
+	}
+
+	return builder.String(), nil
+}

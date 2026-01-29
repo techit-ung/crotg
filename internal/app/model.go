@@ -1,6 +1,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -13,6 +15,7 @@ import (
 
 	"github.com/techitung-arunyawee/code-reviewer-2/internal/config"
 	"github.com/techitung-arunyawee/code-reviewer-2/internal/git"
+	"github.com/techitung-arunyawee/code-reviewer-2/internal/llm"
 	"github.com/techitung-arunyawee/code-reviewer-2/internal/review"
 )
 
@@ -44,6 +47,15 @@ type Model struct {
 	guidelineHash     string
 	pathInput         textinput.Model
 	freeTextInput     textinput.Model
+	keyInput          textinput.Model
+	openRouterKey     string
+	branchFilterInput textinput.Model
+
+	reviewRunning  bool
+	reviewErr      error
+	reviewResult   review.Result
+	reviewProgress reviewProgressMsg
+	reviewUpdates  <-chan tea.Msg
 }
 
 func NewModel() Model {
@@ -51,6 +63,12 @@ func NewModel() Model {
 	pathInput.Placeholder = "path/to/guideline.md"
 	freeTextInput := textinput.New()
 	freeTextInput.Placeholder = "Free-text guideline (optional)"
+	keyInput := textinput.New()
+	keyInput.Placeholder = "OpenRouter API Key"
+	keyInput.EchoMode = textinput.EchoPassword
+	keyInput.EchoCharacter = '*'
+	branchFilterInput := textinput.New()
+	branchFilterInput.Placeholder = "Filter branches"
 
 	return Model{
 		tabs: []string{
@@ -60,10 +78,12 @@ func NewModel() Model {
 			"Publish",
 			"Config",
 		},
-		inWizard:      true,
-		wizardStep:    wizardRepo,
-		pathInput:     pathInput,
-		freeTextInput: freeTextInput,
+		inWizard:          true,
+		wizardStep:        wizardRepo,
+		pathInput:         pathInput,
+		freeTextInput:     freeTextInput,
+		keyInput:          keyInput,
+		branchFilterInput: branchFilterInput,
 	}
 }
 
@@ -82,6 +102,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diffText = msg.raw
 		m.diffFiles = msg.files
 		m.diffErr = msg.err
+		if msg.err == nil {
+			return m, m.maybeStartReview()
+		}
 		return m, nil
 	case guidelinesScannedMsg:
 		m.guidelineOptions = msg.paths
@@ -102,6 +125,26 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.guidelineHash = msg.hash
+		return m, nil
+	case reviewStartedMsg:
+		m.reviewRunning = true
+		m.reviewErr = nil
+		m.reviewUpdates = msg.updates
+		m.reviewProgress = reviewProgressMsg{}
+		return m, listenReviewCmd(msg.updates)
+	case reviewProgressMsg:
+		m.reviewProgress = msg
+		if m.reviewUpdates != nil {
+			return m, listenReviewCmd(m.reviewUpdates)
+		}
+		return m, nil
+	case reviewCompletedMsg:
+		m.reviewRunning = false
+		m.reviewUpdates = nil
+		m.reviewErr = msg.err
+		if msg.err == nil {
+			m.reviewResult = msg.result
+		}
 		return m, nil
 	case repoDetectedMsg:
 		if msg.err != nil {
@@ -185,6 +228,7 @@ const (
 	wizardGuidelines
 	wizardGuidelinePath
 	wizardFreeGuideline
+	wizardOpenRouterKey
 )
 
 type configLoadedMsg struct {
@@ -216,6 +260,21 @@ type guidelinesScannedMsg struct {
 type guidelineHashMsg struct {
 	hash string
 	err  error
+}
+
+type reviewStartedMsg struct {
+	updates <-chan tea.Msg
+}
+
+type reviewProgressMsg struct {
+	completed int
+	total     int
+	file      string
+}
+
+type reviewCompletedMsg struct {
+	result review.Result
+	err    error
 }
 
 func loadConfigCmd() tea.Cmd {
@@ -302,39 +361,62 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.String() == "enter" {
 			m.wizardStep = wizardBaseBranch
 			m.cursor = m.initialBranchIndex(m.cfg.LastBase)
+			m.branchFilterInput.SetValue("")
+			m.branchFilterInput.SetCursor(0)
+			m.branchFilterInput.Focus()
 		}
 	case wizardBaseBranch:
 		switch msg.String() {
 		case "up", "k":
-			m.cursor = clamp(m.cursor-1, 0, len(m.branches)-1)
+			m.cursor = clamp(m.cursor-1, 0, len(m.filteredBranches())-1)
 		case "down", "j":
-			m.cursor = clamp(m.cursor+1, 0, len(m.branches)-1)
+			m.cursor = clamp(m.cursor+1, 0, len(m.filteredBranches())-1)
 		case "enter":
-			if len(m.branches) == 0 {
+			filtered := m.filteredBranches()
+			if len(filtered) == 0 {
 				return m, nil
 			}
-			m.baseBranch = m.branches[m.cursor]
+			m.baseBranch = filtered[m.cursor]
 			m.wizardStep = wizardBranch
 			m.cursor = m.initialBranchIndex(m.cfg.LastBranch)
+			m.branchFilterInput.SetValue("")
+			m.branchFilterInput.SetCursor(0)
+			m.branchFilterInput.Focus()
+			return m, nil
+		default:
+			var cmd tea.Cmd
+			m.branchFilterInput, cmd = m.branchFilterInput.Update(msg)
+			m.cursor = 0
+			return m, cmd
 		}
 	case wizardBranch:
 		switch msg.String() {
 		case "up", "k":
-			m.cursor = clamp(m.cursor-1, 0, len(m.branches)-1)
+			m.cursor = clamp(m.cursor-1, 0, len(m.filteredBranches())-1)
 		case "down", "j":
-			m.cursor = clamp(m.cursor+1, 0, len(m.branches)-1)
+			m.cursor = clamp(m.cursor+1, 0, len(m.filteredBranches())-1)
 		case "b":
 			m.wizardStep = wizardBaseBranch
 			m.cursor = m.initialBranchIndex(m.baseBranch)
+			m.branchFilterInput.SetValue("")
+			m.branchFilterInput.SetCursor(0)
+			m.branchFilterInput.Focus()
 		case "enter":
-			if len(m.branches) == 0 {
+			filtered := m.filteredBranches()
+			if len(filtered) == 0 {
 				return m, nil
 			}
-			m.branch = m.branches[m.cursor]
+			m.branch = filtered[m.cursor]
 			m.wizardStep = wizardGuidelines
 			m.guidelineCursor = 0
 			m.guidelineErr = nil
+			m.branchFilterInput.Blur()
 			return m, scanGuidelinesCmd(m.repoRoot, m.cfg.Guidelines)
+		default:
+			var cmd tea.Cmd
+			m.branchFilterInput, cmd = m.branchFilterInput.Update(msg)
+			m.cursor = 0
+			return m, cmd
 		}
 	case wizardGuidelines:
 		switch msg.String() {
@@ -409,6 +491,12 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cfg.FreeGuideline = strings.TrimSpace(m.freeTextInput.Value())
 			m.cfg.LastBase = m.baseBranch
 			m.cfg.LastBranch = m.branch
+			if strings.TrimSpace(config.OpenRouterAPIKey()) == "" && strings.TrimSpace(m.openRouterKey) == "" {
+				m.wizardStep = wizardOpenRouterKey
+				m.keyInput.Reset()
+				m.keyInput.Focus()
+				return m, nil
+			}
 			m.inWizard = false
 			return m, tea.Batch(
 				saveConfigCmd(m.cfg),
@@ -418,6 +506,31 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		default:
 			var cmd tea.Cmd
 			m.freeTextInput, cmd = m.freeTextInput.Update(msg)
+			return m, cmd
+		}
+	case wizardOpenRouterKey:
+		switch msg.String() {
+		case "esc":
+			m.keyInput.SetValue("")
+			m.wizardStep = wizardFreeGuideline
+			return m, nil
+		case "b":
+			m.wizardStep = wizardFreeGuideline
+			return m, nil
+		case "enter":
+			m.openRouterKey = strings.TrimSpace(m.keyInput.Value())
+			if m.openRouterKey == "" {
+				return m, nil
+			}
+			m.inWizard = false
+			return m, tea.Batch(
+				saveConfigCmd(m.cfg),
+				hashGuidelinesCmd(m.cfg.Guidelines, m.cfg.FreeGuideline),
+				generateDiffCmd(m.repoRoot, m.baseBranch, m.branch),
+			)
+		default:
+			var cmd tea.Cmd
+			m.keyInput, cmd = m.keyInput.Update(msg)
 			return m, cmd
 		}
 	}
@@ -455,6 +568,8 @@ func (m Model) renderWizard() string {
 		return m.renderGuidelinePathInput()
 	case wizardFreeGuideline:
 		return m.renderFreeGuidelineInput()
+	case wizardOpenRouterKey:
+		return m.renderOpenRouterKeyInput()
 	default:
 		return "loading..."
 	}
@@ -464,6 +579,10 @@ func (m Model) renderActiveView() string {
 	switch m.tabs[m.active] {
 	case "Diff":
 		return m.renderDiffView()
+	case "Comments":
+		return m.renderCommentsView()
+	case "Verdict":
+		return m.renderVerdictView()
 	case "Config":
 		return m.renderConfigView()
 	default:
@@ -545,8 +664,22 @@ func (m Model) renderBranchPicker(title, selected string) string {
 		return lipgloss.JoinVertical(lipgloss.Top, header, "No branches found.")
 	}
 
-	lines := make([]string, 0, len(m.branches))
-	for i, branch := range m.branches {
+	filtered := m.filteredBranches()
+	if len(filtered) == 0 {
+		return lipgloss.JoinVertical(
+			lipgloss.Top,
+			header,
+			"Filter: "+m.branchFilterInput.View(),
+			"",
+			"No branches match the filter.",
+		)
+	}
+
+	visibleCount := m.branchVisibleCount()
+	start, end := clampWindow(m.cursor, len(filtered), visibleCount)
+	lines := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		branch := filtered[i]
 		cursor := "  "
 		if i == m.cursor {
 			cursor = "> "
@@ -558,19 +691,20 @@ func (m Model) renderBranchPicker(title, selected string) string {
 		lines = append(lines, cursor+label)
 	}
 
-	hint := "Use ↑/↓ and Enter."
+	hint := "Type to filter, ↑/↓ to move, Enter to select."
 	if m.wizardStep == wizardBranch {
-		hint = "Use ↑/↓ and Enter. Press b to go back."
+		hint = "Type to filter, ↑/↓ to move, Enter to select, b to go back."
 	}
-
-	return lipgloss.JoinVertical(lipgloss.Top, header, strings.Join(lines, "\n"), "", hint)
+	status := fmt.Sprintf("Showing %d-%d of %d (filtered from %d)", start+1, end, len(filtered), len(m.branches))
+	return lipgloss.JoinVertical(lipgloss.Top, header, "Filter: "+m.branchFilterInput.View(), "", strings.Join(lines, "\n"), "", status, "", hint)
 }
 
 func (m Model) initialBranchIndex(branch string) int {
 	if branch == "" {
 		return 0
 	}
-	for i, name := range m.branches {
+	filtered := m.filteredBranches()
+	for i, name := range filtered {
 		if name == branch {
 			return i
 		}
@@ -631,10 +765,24 @@ func (m Model) renderFreeGuidelineInput() string {
 	return lipgloss.JoinVertical(lipgloss.Top, header, body, "", hint)
 }
 
+func (m Model) renderOpenRouterKeyInput() string {
+	header := lipgloss.NewStyle().Bold(true).Render("OpenRouter API key")
+	body := m.keyInput.View()
+	hint := "Enter to continue, b to go back."
+	return lipgloss.JoinVertical(lipgloss.Top, header, body, "", hint)
+}
+
 func (m Model) renderConfigView() string {
 	lines := []string{
 		fmt.Sprintf("Base branch: %s", m.baseBranch),
 		fmt.Sprintf("Review branch: %s", m.branch),
+	}
+	if m.reviewResult.Model != "" {
+		lines = append(lines, fmt.Sprintf("Model: %s", m.reviewResult.Model))
+	} else if m.cfg.LastModel != "" {
+		lines = append(lines, fmt.Sprintf("Model: %s", m.cfg.LastModel))
+	} else {
+		lines = append(lines, fmt.Sprintf("Model: %s", review.DefaultModel))
 	}
 	if m.guidelineHash == "" {
 		lines = append(lines, "Guideline hash: (none)")
@@ -656,6 +804,61 @@ func (m Model) renderConfigView() string {
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderCommentsView() string {
+	if m.reviewRunning {
+		return m.renderReviewStatus("Reviewing comments...")
+	}
+	if m.reviewErr != nil {
+		return fmt.Sprintf("Review error: %s", m.reviewErr)
+	}
+	if len(m.reviewResult.Comments) == 0 {
+		return "No comments generated."
+	}
+
+	lines := make([]string, 0, len(m.reviewResult.Comments))
+	for _, comment := range m.reviewResult.Comments {
+		lines = append(lines, fmt.Sprintf("[%s] %s:%d %s", comment.Severity, comment.FilePath, comment.StartLine, comment.Title))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderVerdictView() string {
+	if m.reviewRunning {
+		return m.renderReviewStatus("Reviewing verdict...")
+	}
+	if m.reviewErr != nil {
+		return fmt.Sprintf("Review error: %s", m.reviewErr)
+	}
+	if m.reviewResult.Verdict.Decision == "" {
+		return "Verdict not available."
+	}
+
+	verdict := m.reviewResult.Verdict
+	lines := []string{
+		fmt.Sprintf("Decision: %s", verdict.Decision),
+		fmt.Sprintf("Summary: %s", verdict.Summary),
+	}
+	if len(verdict.Rationale) > 0 {
+		lines = append(lines, "", "Rationale:")
+		for _, item := range verdict.Rationale {
+			lines = append(lines, "- "+item)
+		}
+	}
+	lines = append(lines, "", fmt.Sprintf("Stats: NIT=%d, SUGGESTION=%d, ISSUE=%d, BLOCKER=%d", verdict.Stats.Nit, verdict.Stats.Suggestion, verdict.Stats.Issue, verdict.Stats.Blocker))
+	return strings.Join(lines, "\n")
+}
+
+func (m Model) renderReviewStatus(heading string) string {
+	if m.reviewProgress.total == 0 {
+		return heading
+	}
+	status := fmt.Sprintf("%s (%d/%d)", heading, m.reviewProgress.completed, m.reviewProgress.total)
+	if m.reviewProgress.file != "" {
+		status = fmt.Sprintf("%s: %s", status, m.reviewProgress.file)
+	}
+	return status
 }
 
 func (m Model) selectedGuidelines() []string {
@@ -711,4 +914,101 @@ func clamp(value, min, max int) int {
 		return max
 	}
 	return value
+}
+
+func (m Model) filteredBranches() []string {
+	filter := strings.ToLower(strings.TrimSpace(m.branchFilterInput.Value()))
+	if filter == "" {
+		return m.branches
+	}
+
+	filtered := make([]string, 0, len(m.branches))
+	for _, branch := range m.branches {
+		if strings.Contains(strings.ToLower(branch), filter) {
+			filtered = append(filtered, branch)
+		}
+	}
+	return filtered
+}
+
+func (m Model) branchVisibleCount() int {
+	if m.height == 0 {
+		return 10
+	}
+	usable := m.height - 8
+	if usable < 5 {
+		return 5
+	}
+	return usable
+}
+
+func clampWindow(cursor, total, window int) (int, int) {
+	if window <= 0 {
+		window = 1
+	}
+	if total <= window {
+		return 0, total
+	}
+	start := cursor - window/2
+	if start < 0 {
+		start = 0
+	}
+	end := start + window
+	if end > total {
+		end = total
+		start = end - window
+		if start < 0 {
+			start = 0
+		}
+	}
+	return start, end
+}
+
+func (m Model) maybeStartReview() tea.Cmd {
+	if m.reviewRunning || m.reviewResult.GeneratedAt.Unix() != 0 {
+		return nil
+	}
+	if len(m.diffFiles) == 0 || m.diffErr != nil {
+		return nil
+	}
+	apiKey := strings.TrimSpace(m.openRouterKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(config.OpenRouterAPIKey())
+	}
+	if apiKey == "" {
+		m.reviewErr = errors.New("missing OPENROUTER_API_KEY")
+		return nil
+	}
+	return startReviewCmd(m.diffFiles, m.cfg, m.guidelineHash, apiKey)
+}
+
+func startReviewCmd(diffFiles []git.DiffFile, cfg config.Config, guidelineHash string, apiKey string) tea.Cmd {
+	return func() tea.Msg {
+		updates := make(chan tea.Msg)
+		go func() {
+			defer close(updates)
+			client := llm.NewClient(apiKey, config.OpenRouterBaseURL())
+			ctx := context.Background()
+			result, err := review.Run(ctx, client, diffFiles, review.RunOptions{
+				Model:          cfg.LastModel,
+				GuidelinePaths: cfg.Guidelines,
+				FreeText:       cfg.FreeGuideline,
+				GuidelineHash:  guidelineHash,
+			}, func(progress review.Progress) {
+				updates <- reviewProgressMsg{completed: progress.Completed, total: progress.Total, file: progress.CurrentFile}
+			})
+			updates <- reviewCompletedMsg{result: result, err: err}
+		}()
+		return reviewStartedMsg{updates: updates}
+	}
+}
+
+func listenReviewCmd(updates <-chan tea.Msg) tea.Cmd {
+	return func() tea.Msg {
+		msg, ok := <-updates
+		if !ok {
+			return nil
+		}
+		return msg
+	}
 }

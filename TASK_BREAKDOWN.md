@@ -20,10 +20,10 @@
 - [x] Compute and display `GuidelineHash`
 
 ## Milestone 4 — OpenRouter client + review generation
-- [ ] Implement OpenRouter API client (chat/completions) with progress UI
-- [ ] Build prompt builder + JSON schema contract for review output
-- [ ] Implement diff chunking strategy per file and invoke LLM
-- [ ] Merge generated comments, dedupe via stable hash, and build verdict
+- [x] Implement OpenRouter API client (chat/completions) with progress UI
+- [x] Build prompt builder + JSON schema contract for review output
+- [x] Implement diff chunking strategy per file and invoke LLM
+- [x] Merge generated comments, dedupe via stable hash, and build verdict
 
 ## Milestone 5 — Comments triage UX
 - [ ] Implement Comments tab table with filters (severity, file)
