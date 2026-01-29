@@ -5,6 +5,7 @@
 - Milestone 2 in progress: git repo detection, branch listing, and diff generation helpers implemented (tests included).
 - Wizard flow now detects repo and lets users select base/branch, persisting selections to config.
 - Milestone 2 complete: diff parsing types and Diff tab (file list + diff pane) wired to generated diff.
+- Milestone 3 complete: guideline scanning, multi-select, free-text input, and guideline hash display.
 
 ## What was implemented
 - TUI entry point: `cmd/reviewer/main.go`
@@ -15,6 +16,8 @@
 - Wizard flow: repo detection + branch/base picker persisted to config.
 - Diff parser + types: `internal/git/diff.go` + tests in `internal/git/diff_test.go`
 - Diff tab UI: file list + diff pane in `internal/app/model.go`
+- Guideline scanning + hashing: `internal/review/guidelines.go`
+- Guideline selection wizard (multi-select, add path, free-text input) + hash display: `internal/app/model.go`
 - Dependencies: Bubble Tea, Bubbles, Lip Gloss added to `go.mod`/`go.sum`
 
 ## How to run

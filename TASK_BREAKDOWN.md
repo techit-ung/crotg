@@ -14,10 +14,10 @@
 - [x] Build Diff tab UI (file list + diff pager)
 
 ## Milestone 3 — Guidelines UX
-- [ ] Scan repo for guideline profiles (`.review.md`, `.review/*.md`, custom paths)
-- [ ] Implement multi-select picker for guideline profiles
-- [ ] Add free-text guideline input modal and append logic
-- [ ] Compute and display `GuidelineHash`
+- [x] Scan repo for guideline profiles (`.review.md`, `.review/*.md`, custom paths)
+- [x] Implement multi-select picker for guideline profiles
+- [x] Add free-text guideline input modal and append logic
+- [x] Compute and display `GuidelineHash`
 
 ## Milestone 4 — OpenRouter client + review generation
 - [ ] Implement OpenRouter API client (chat/completions) with progress UI
