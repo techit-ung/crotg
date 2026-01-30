@@ -13,6 +13,10 @@ type Config struct {
 	LastModel     string   `json:"lastModel,omitempty"`
 	Guidelines    []string `json:"guidelines,omitempty"`
 	FreeGuideline string   `json:"freeGuideline,omitempty"`
+	// Publish settings
+	PublishWorkspace string `json:"publishWorkspace,omitempty"`
+	PublishRepoSlug  string `json:"publishRepoSlug,omitempty"`
+	PublishPRID      int    `json:"publishPRID,omitempty"`
 }
 
 func ConfigDir() (string, error) {

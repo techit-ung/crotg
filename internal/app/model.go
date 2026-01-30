@@ -15,6 +15,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/techitung-arunyawee/code-reviewer-2/internal/bitbucket"
 	"github.com/techitung-arunyawee/code-reviewer-2/internal/config"
 	"github.com/techitung-arunyawee/code-reviewer-2/internal/git"
 	"github.com/techitung-arunyawee/code-reviewer-2/internal/llm"
@@ -73,6 +74,15 @@ type Model struct {
 	commentsDetailView     viewport.Model
 	commentsPanelFocus     panelFocus
 	diffPanelFocus         panelFocus
+
+	publishWorkspaceInput textinput.Model
+	publishRepoSlugInput  textinput.Model
+	publishPRIDInput      textinput.Model
+	publishTokenInput     textinput.Model
+	publishToken          string
+	publishRunning        bool
+	publishError          error
+	publishResultID       string
 }
 
 func NewModel() Model {
@@ -90,6 +100,18 @@ func NewModel() Model {
 	modelInput.Placeholder = "Model (e.g. openai/gpt-4o-mini)"
 	commentsFileFilter := textinput.New()
 	commentsFileFilter.Placeholder = "Filter by file path"
+
+	publishWorkspaceInput := textinput.New()
+	publishWorkspaceInput.Placeholder = "Bitbucket Workspace (e.g. acme)"
+	publishRepoSlugInput := textinput.New()
+	publishRepoSlugInput.Placeholder = "Repo Slug (e.g. my-repo)"
+	publishPRIDInput := textinput.New()
+	publishPRIDInput.Placeholder = "PR ID (e.g. 123)"
+	publishTokenInput := textinput.New()
+	publishTokenInput.Placeholder = "Bitbucket App Password or Token"
+	publishTokenInput.EchoMode = textinput.EchoPassword
+	publishTokenInput.EchoCharacter = '*'
+
 	diffView := viewport.New(0, 0)
 	commentsDetailView := viewport.New(0, 0)
 	commentsTable := table.New(
@@ -124,6 +146,10 @@ func NewModel() Model {
 		commentsTable:      commentsTable,
 		commentsDetailView: commentsDetailView,
 		commentsPanelFocus: panelFocusLeft,
+		publishWorkspaceInput: publishWorkspaceInput,
+		publishRepoSlugInput:  publishRepoSlugInput,
+		publishPRIDInput:      publishPRIDInput,
+		publishTokenInput:     publishTokenInput,
 		modelOptions: []string{
 			review.DefaultModel,
 			"Custom...",
@@ -139,6 +165,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case configLoadedMsg:
 		m.cfg = msg.cfg
+		m.publishWorkspaceInput.SetValue(msg.cfg.PublishWorkspace)
+		m.publishRepoSlugInput.SetValue(msg.cfg.PublishRepoSlug)
+		if msg.cfg.PublishPRID != 0 {
+			m.publishPRIDInput.SetValue(fmt.Sprintf("%d", msg.cfg.PublishPRID))
+		}
 		return m, nil
 	case configSavedMsg:
 		return m, nil
@@ -195,6 +226,25 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.updateCommentsTableLayout()
 		}
 		return m, nil
+	case publishStartedMsg:
+		m.publishRunning = true
+		m.publishError = nil
+		m.publishResultID = ""
+		return m, nil
+	case publishCompletedMsg:
+		m.publishRunning = false
+		m.publishError = msg.err
+		m.publishResultID = msg.resultID
+		if msg.err == nil {
+			// Update config with non-secret publish settings
+			m.cfg.PublishWorkspace = m.publishWorkspaceInput.Value()
+			m.cfg.PublishRepoSlug = m.publishRepoSlugInput.Value()
+			var prID int
+			fmt.Sscanf(m.publishPRIDInput.Value(), "%d", &prID)
+			m.cfg.PublishPRID = prID
+			return m, saveConfigCmd(m.cfg)
+		}
+		return m, nil
 	case repoDetectedMsg:
 		if msg.err != nil {
 			m.err = msg.err
@@ -219,6 +269,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.tabs[m.active] == "Comments" {
 			return m.updateCommentsTab(msg)
+		}
+		if m.tabs[m.active] == "Publish" {
+			return m.updatePublishTab(msg)
+		}
+		if m.active == 3 { // Case "Publish"
+			return m.updatePublishTab(msg)
 		}
 		switch msg.String() {
 		case "ctrl+c", "q":
@@ -333,6 +389,13 @@ type reviewProgressMsg struct {
 type reviewCompletedMsg struct {
 	result review.Result
 	err    error
+}
+
+type publishStartedMsg struct{}
+
+type publishCompletedMsg struct {
+	resultID string
+	err      error
 }
 
 func loadConfigCmd() tea.Cmd {
@@ -699,11 +762,70 @@ func (m Model) renderActiveView() string {
 		return m.renderCommentsView()
 	case "Verdict":
 		return m.renderVerdictView()
+	case "Publish":
+		return m.renderPublishView()
 	case "Config":
 		return m.renderConfigView()
 	default:
 		return fmt.Sprintf("%s view\n\nComing soon.", m.tabs[m.active])
 	}
+}
+
+func (m Model) renderPublishView() string {
+	if m.reviewRunning {
+		return "\n  Review in progress, please wait..."
+	}
+	if m.reviewResult.GeneratedAt.IsZero() {
+		return "\n  No review results to publish. Please run a review first."
+	}
+
+	header := lipgloss.NewStyle().Bold(true).Padding(1, 0).Render("Publish to Bitbucket Cloud")
+
+	var statusLine string
+	if m.publishRunning {
+		statusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("205")).Render("Publishing...")
+	} else if m.publishError != nil {
+		statusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(fmt.Sprintf("Error: %v", m.publishError))
+	} else if m.publishResultID != "" {
+		statusLine = lipgloss.NewStyle().Foreground(lipgloss.Color("10")).Render(fmt.Sprintf("Success! Comment ID: %s", m.publishResultID))
+	}
+
+	// Calculate counts
+	total := len(m.reviewResult.Comments)
+	selected := 0
+	for _, c := range m.reviewResult.Comments {
+		if c.Publish {
+			selected++
+		}
+	}
+
+	summary := fmt.Sprintf("Summary: %d comments total, %d selected for publishing.", total, selected)
+	if selected == 0 {
+		summary += lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(" (Nothing will be published)")
+	}
+
+	form := lipgloss.JoinVertical(lipgloss.Left,
+		"Workspace:", m.publishWorkspaceInput.View(),
+		"Repo Slug:", m.publishRepoSlugInput.View(),
+		"PR ID:    ", m.publishPRIDInput.View(),
+		"Token:    ", m.publishTokenInput.View(),
+	)
+
+	hint := "Tab to cycle, Enter to confirm input, p to Publish to Bitbucket."
+	if m.publishRunning {
+		hint = "Publishing..."
+	}
+
+	return lipgloss.JoinVertical(lipgloss.Left,
+		header,
+		summary,
+		"",
+		form,
+		"",
+		statusLine,
+		"",
+		hint,
+	)
 }
 
 func (m Model) renderDiffView() string {
@@ -1193,6 +1315,92 @@ func (m *Model) refreshCommentsTable() {
 	m.updateCommentsDetailContent(true)
 }
 
+func (m *Model) updatePublishTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.publishRunning {
+		return m, nil
+	}
+
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "right", "l":
+		m.active = (m.active + 1) % len(m.tabs)
+		m.blurPublishInputs()
+		m.focusPublishInput()
+		return m, nil
+	case "left", "h":
+		m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
+		m.blurPublishInputs()
+		m.focusPublishInput()
+		return m, nil
+	case "tab":
+		m.cyclePublishFocus()
+		return m, nil
+	case "enter":
+		if m.publishWorkspaceInput.Focused() || m.publishRepoSlugInput.Focused() || m.publishPRIDInput.Focused() || m.publishTokenInput.Focused() {
+			m.cyclePublishFocus()
+			return m, nil
+		}
+	case "p":
+		if !m.publishWorkspaceInput.Focused() && !m.publishRepoSlugInput.Focused() && !m.publishPRIDInput.Focused() && !m.publishTokenInput.Focused() {
+			m.publishRunning = true
+			return m, m.publishReviewCmd()
+		}
+	}
+
+	var cmds []tea.Cmd
+	var cmd tea.Cmd
+
+	m.publishWorkspaceInput, cmd = m.publishWorkspaceInput.Update(msg)
+	cmds = append(cmds, cmd)
+
+	m.publishRepoSlugInput, cmd = m.publishRepoSlugInput.Update(msg)
+	cmds = append(cmds, cmd)
+
+	m.publishPRIDInput, cmd = m.publishPRIDInput.Update(msg)
+	cmds = append(cmds, cmd)
+
+	m.publishTokenInput, cmd = m.publishTokenInput.Update(msg)
+	cmds = append(cmds, cmd)
+
+	return m, tea.Batch(cmds...)
+}
+
+func (m *Model) blurPublishInputs() {
+	m.publishWorkspaceInput.Blur()
+	m.publishRepoSlugInput.Blur()
+	m.publishPRIDInput.Blur()
+	m.publishTokenInput.Blur()
+}
+
+func (m *Model) focusPublishInput() {
+	if m.tabs[m.active] == "Publish" {
+		m.publishWorkspaceInput.Focus()
+	}
+}
+
+func (m *Model) cyclePublishFocus() {
+	if m.publishWorkspaceInput.Focused() {
+		m.publishWorkspaceInput.Blur()
+		m.publishRepoSlugInput.Focus()
+	} else if m.publishRepoSlugInput.Focused() {
+		m.publishRepoSlugInput.Blur()
+		m.publishPRIDInput.Focus()
+	} else if m.publishPRIDInput.Focused() {
+		m.publishPRIDInput.Blur()
+		if config.BitbucketToken() == "" {
+			m.publishTokenInput.Focus()
+		} else {
+			m.publishWorkspaceInput.Focus()
+		}
+	} else if m.publishTokenInput.Focused() {
+		m.publishTokenInput.Blur()
+		m.publishWorkspaceInput.Focus()
+	} else {
+		m.publishWorkspaceInput.Focus()
+	}
+}
+
 func (m *Model) updateCommentsTableLayout() {
 	if m.width == 0 || m.height == 0 {
 		return
@@ -1592,5 +1800,38 @@ func listenReviewCmd(updates <-chan tea.Msg) tea.Cmd {
 			return nil
 		}
 		return msg
+	}
+}
+
+func (m Model) publishReviewCmd() tea.Cmd {
+	return func() tea.Msg {
+		token := strings.TrimSpace(m.publishToken)
+		if token == "" {
+			token = strings.TrimSpace(config.BitbucketToken())
+		}
+
+		workspace := strings.TrimSpace(m.publishWorkspaceInput.Value())
+		repoSlug := strings.TrimSpace(m.publishRepoSlugInput.Value())
+		prIDStr := strings.TrimSpace(m.publishPRIDInput.Value())
+
+		var prID int
+		fmt.Sscanf(prIDStr, "%d", &prID)
+
+		if token == "" || workspace == "" || repoSlug == "" || prID == 0 {
+			return publishCompletedMsg{err: errors.New("missing bitbucket configuration (workspace, repo, PR ID, or token)")}
+		}
+
+		cfg := bitbucket.Config{
+			Workspace:   workspace,
+			RepoSlug:    repoSlug,
+			PullRequest: prID,
+			Token:       token,
+		}
+
+		client := bitbucket.NewClient(cfg)
+		markdown := bitbucket.ComposeMarkdown(m.reviewResult)
+
+		resultID, err := client.PublishComment(markdown)
+		return publishCompletedMsg{resultID: resultID, err: err}
 	}
 }
