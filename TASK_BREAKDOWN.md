@@ -33,10 +33,10 @@
 - [ ] Optional: add comment edit modal for title/body/suggestion
 
 ## Milestone 6 — Publish to Bitbucket Cloud
-- [ ] Build Publish tab inputs (workspace, repo slug, PR id, token status)
-- [ ] Prompt for Bitbucket token when missing at publish time
-- [ ] Compose and post markdown comments to Bitbucket Cloud PR
-- [ ] Show publish results/errors and persist non-secret config
+- [x] Build Publish tab inputs (workspace, repo slug, PR id, token status)
+- [x] Prompt for Bitbucket token when missing at publish time
+- [x] Compose and post markdown comments to Bitbucket Cloud PR
+- [x] Show publish results/errors and persist non-secret config
 
 ## Milestone 7 — Polish & Validation
 - [ ] Implement keyboard help overlay, status bar, and retry/error views

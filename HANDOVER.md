@@ -7,6 +7,7 @@
 - Milestone 4 complete: OpenRouter client, prompt builders, per-file review chunking, comment dedupe, verdict generation.
 - Milestone 5 complete: comments table with filters, detail pane, and publish toggles.
 - Milestone 5 update: Diff/Comments panes now scroll independently with a focus toggle.
+- Milestone 6 complete: Bitbucket Cloud publishing flow with PR comment composition.
 
 ## What was implemented
 - TUI entry point: `cmd/reviewer/main.go`
@@ -25,13 +26,16 @@
 - Comments tab: table view, severity/file filters, detail pane, and publish include/exclude toggles in `internal/app/model.go`
 - Added independent scrolling viewports for Comments detail pane and Diff pane focus switching via Tab in `internal/app/model.go`.
 - Added model selection step to the wizard, improved review progress status (success/failure), warning for dropped comments, and LLM request logging to a cache file.
+- Bitbucket integration: New `internal/bitbucket` package for API client and Markdown composer.
+- Publish tab: TUI UI for Bitbucket workspace, repo, PR ID configuration and publishing execution.
+- Persistence: Storing non-secret Bitbucket configuration to `config.json`.
 - Dependencies: Bubble Tea, Bubbles, Lip Gloss added to `go.mod`/`go.sum`
 
 ## How to run
 - `go run ./cmd/reviewer`
 
-## Suggested next step (Milestone 6)
-- Build Publish tab config inputs and Bitbucket Cloud publish flow.
+## Suggested next step (Milestone 7)
+- Implement keyboard help overlay, status bar, and retry/error views.
 
 ## Notes
 - Config is stored under `~/.config/reviewer/config.json` unless `CODE_REVIEWER_CONFIG_DIR` is set.

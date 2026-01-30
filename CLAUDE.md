@@ -1,4 +1,6 @@
-# Agent
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 After completing a task, update `TAKS_BREAKDOWN.md` and `HANDOVER.md` to reflect the current status and next steps.
 
@@ -49,7 +51,6 @@ The project is an interactive Terminal UI (TUI) for reviewing Git diffs using LL
 - `AGENTS.md`: Detailed repository guidelines and coding standards.
 - `HANDOVER.md`: Current implementation status and milestones.
 - `TASK_BREAKDOWN.md`: Progress tracking (Milestones 1-5 done, 6-7 remaining).
-
 
 # Repository Guidelines
 
