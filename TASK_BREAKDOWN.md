@@ -39,11 +39,13 @@
 - [x] Show publish results/errors and persist non-secret config
 
 ## Milestone 7 — Polish & Validation
-- [ ] Implement keyboard help overlay, status bar, and retry/error views
-- [ ] Add cancellation support and progress indicators for network ops
-- [ ] Validate branches, empty diff, guideline files, and LLM JSON schema
-- [ ] Implement structured logging with optional `--debug` flag
+- [x] Implement keyboard help overlay, status bar, and retry/error views
+- [x] Add cancellation support and progress indicators for network ops
+- [x] Validate branches, empty diff, guideline files, and LLM JSON schema
+- [x] Implement structured logging with optional `--debug` flag
 
 ## CLI & Future Enhancements
-- [ ] Wire CLI flags (`--branch`, `--base`, `--model`, `--guideline`, `--no-tui`, `--version`)
+- [x] Wire CLI flags (`--branch`, `--base`, `--model`, `--version`)
+- [ ] Implement `--guideline` flag for automated runs
+- [ ] Implement `--no-tui` mode
 - [ ] Track open questions/future enhancements for v2 (Bitbucket diff fetch, caching, exports, etc.)

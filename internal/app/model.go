@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -83,9 +84,16 @@ type Model struct {
 	publishRunning        bool
 	publishError          error
 	publishResultID       string
+
+	showHelp bool
+	cancel   context.CancelFunc
+
+	initialBase   string
+	initialBranch string
+	initialModel  string
 }
 
-func NewModel() Model {
+func NewModel(base, branch, model string) Model {
 	pathInput := textinput.New()
 	pathInput.Placeholder = "path/to/guideline.md"
 	freeTextInput := textinput.New()
@@ -150,6 +158,9 @@ func NewModel() Model {
 		publishRepoSlugInput:  publishRepoSlugInput,
 		publishPRIDInput:      publishPRIDInput,
 		publishTokenInput:     publishTokenInput,
+		initialBase:           base,
+		initialBranch:         branch,
+		initialModel:          model,
 		modelOptions: []string{
 			review.DefaultModel,
 			"Custom...",
@@ -158,6 +169,7 @@ func NewModel() Model {
 }
 
 func (m Model) Init() tea.Cmd {
+	slog.Info("Starting code-reviewer-2")
 	return tea.Batch(loadConfigCmd(), detectRepoCmd())
 }
 
@@ -165,6 +177,15 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case configLoadedMsg:
 		m.cfg = msg.cfg
+		if m.initialBase != "" {
+			m.cfg.LastBase = m.initialBase
+		}
+		if m.initialBranch != "" {
+			m.cfg.LastBranch = m.initialBranch
+		}
+		if m.initialModel != "" {
+			m.cfg.LastModel = m.initialModel
+		}
 		m.publishWorkspaceInput.SetValue(msg.cfg.PublishWorkspace)
 		m.publishRepoSlugInput.SetValue(msg.cfg.PublishRepoSlug)
 		if msg.cfg.PublishPRID != 0 {
@@ -209,6 +230,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reviewErr = nil
 		m.reviewUpdates = msg.updates
 		m.reviewProgress = reviewProgressMsg{}
+		m.cancel = msg.cancel
 		return m, listenReviewCmd(msg.updates)
 	case reviewProgressMsg:
 		m.reviewProgress = msg
@@ -220,7 +242,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.reviewRunning = false
 		m.reviewUpdates = nil
 		m.reviewErr = msg.err
-		if msg.err == nil {
+		if msg.err != nil {
+			slog.Error("Review failed", "error", msg.err)
+		} else {
+			slog.Info("Review completed", "comments", len(msg.result.Comments))
 			m.reviewResult = msg.result
 			m.refreshCommentsTable()
 			m.updateCommentsTableLayout()
@@ -230,12 +255,16 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.publishRunning = true
 		m.publishError = nil
 		m.publishResultID = ""
+		m.cancel = msg.cancel
 		return m, nil
 	case publishCompletedMsg:
 		m.publishRunning = false
 		m.publishError = msg.err
 		m.publishResultID = msg.resultID
-		if msg.err == nil {
+		if msg.err != nil {
+			slog.Error("Publish failed", "error", msg.err)
+		} else {
+			slog.Info("Publish successful", "id", msg.resultID)
 			// Update config with non-secret publish settings
 			m.cfg.PublishWorkspace = m.publishWorkspaceInput.Value()
 			m.cfg.PublishRepoSlug = m.publishRepoSlugInput.Value()
@@ -261,6 +290,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateCommentsTableLayout()
 		return m, nil
 	case tea.KeyMsg:
+		if m.showHelp {
+			m.showHelp = false
+			return m, nil
+		}
 		if m.inWizard {
 			return m.updateWizard(msg)
 		}
@@ -273,17 +306,35 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tabs[m.active] == "Publish" {
 			return m.updatePublishTab(msg)
 		}
-		if m.active == 3 { // Case "Publish"
-			return m.updatePublishTab(msg)
+		if m.tabs[m.active] == "Config" {
+			return m.updateConfigTab(msg)
 		}
+		slog.Debug("Key pressed", "key", msg.String(), "tab", m.tabs[m.active])
 		switch msg.String() {
-		case "ctrl+c", "q":
+		case "ctrl+c":
+			if (m.reviewRunning || m.publishRunning) && m.cancel != nil {
+				m.cancel()
+			}
 			return m, tea.Quit
+		case "q":
+			if !m.commentsFilterActive {
+				return m, tea.Quit
+			}
+		case "esc":
+			if (m.reviewRunning || m.publishRunning) && m.cancel != nil {
+				m.cancel()
+				m.reviewRunning = false
+				m.publishRunning = false
+				return m, nil
+			}
 		case "right", "l":
 			m.active = (m.active + 1) % len(m.tabs)
 			return m, nil
 		case "left", "h":
 			m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
+			return m, nil
+		case "?":
+			m.showHelp = true
 			return m, nil
 		}
 	}
@@ -296,14 +347,24 @@ func (m Model) View() string {
 		return "loading..."
 	}
 
+	var content string
 	if m.inWizard {
-		return m.renderWizard()
+		content = m.renderWizard()
+	} else {
+		tabLine := m.renderTabs()
+		mainContent := m.renderActiveView()
+		content = lipgloss.JoinVertical(lipgloss.Top, tabLine, mainContent)
 	}
 
-	tabLine := m.renderTabs()
-	content := m.renderActiveView()
+	// Ensure content takes up all space except status bar
+	content = lipgloss.NewStyle().Height(m.height - 1).MaxHeight(m.height - 1).Render(content)
+	statusBar := m.renderStatusBar()
+	view := lipgloss.JoinVertical(lipgloss.Top, content, statusBar)
 
-	return lipgloss.JoinVertical(lipgloss.Top, tabLine, content)
+	if m.showHelp {
+		return m.renderHelpOverlay(view)
+	}
+	return view
 }
 
 func (m Model) renderTabs() string {
@@ -376,6 +437,7 @@ type guidelineHashMsg struct {
 
 type reviewStartedMsg struct {
 	updates <-chan tea.Msg
+	cancel  context.CancelFunc
 }
 
 type reviewProgressMsg struct {
@@ -391,7 +453,9 @@ type reviewCompletedMsg struct {
 	err    error
 }
 
-type publishStartedMsg struct{}
+type publishStartedMsg struct {
+	cancel context.CancelFunc
+}
 
 type publishCompletedMsg struct {
 	resultID string
@@ -714,11 +778,10 @@ func (m Model) updateWizard(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) renderWizard() string {
-	header := lipgloss.NewStyle().Bold(true).Render("Setup Wizard")
 	if m.err != nil {
-		body := fmt.Sprintf("Error: %s\n\nPress r to retry, q to quit.", m.err)
-		return lipgloss.JoinVertical(lipgloss.Top, header, body)
+		return m.renderErrorView(m.err, "Press r to retry, q to quit.")
 	}
+	header := lipgloss.NewStyle().Bold(true).Render("Setup Wizard")
 
 	switch m.wizardStep {
 	case wizardRepo:
@@ -755,6 +818,10 @@ func (m Model) renderWizard() string {
 }
 
 func (m Model) renderActiveView() string {
+	if m.reviewErr != nil && m.tabs[m.active] != "Config" {
+		return m.renderErrorView(m.reviewErr, "Press r (in Config tab) to re-run review.")
+	}
+
 	switch m.tabs[m.active] {
 	case "Diff":
 		return m.renderDiffView()
@@ -769,6 +836,24 @@ func (m Model) renderActiveView() string {
 	default:
 		return fmt.Sprintf("%s view\n\nComing soon.", m.tabs[m.active])
 	}
+}
+
+func (m *Model) updateConfigTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		return m, tea.Quit
+	case "right", "l":
+		m.active = (m.active + 1) % len(m.tabs)
+		return m, nil
+	case "left", "h":
+		m.active = (m.active - 1 + len(m.tabs)) % len(m.tabs)
+		return m, nil
+	case "r":
+		m.reviewResult = review.Result{}
+		m.reviewRunning = true
+		return m, m.maybeStartReview()
+	}
+	return m, nil
 }
 
 func (m Model) renderPublishView() string {
@@ -830,10 +915,10 @@ func (m Model) renderPublishView() string {
 
 func (m Model) renderDiffView() string {
 	if m.diffErr != nil {
-		return fmt.Sprintf("Diff error: %s", m.diffErr)
+		return m.renderErrorView(m.diffErr, "Check your branches and try again.")
 	}
 	if len(m.diffFiles) == 0 {
-		return "No diff files to display."
+		return m.renderErrorView(errors.New("no changes detected"), "Make sure you selected the correct branches and have committed your changes.")
 	}
 
 	leftWidth, rightWidth := m.diffPaneWidths()
@@ -1090,9 +1175,6 @@ func (m Model) renderCommentsView() string {
 	if m.reviewRunning {
 		return m.renderReviewStatus("Reviewing comments...")
 	}
-	if m.reviewErr != nil {
-		return fmt.Sprintf("Review error: %s", m.reviewErr)
-	}
 	if len(m.reviewResult.Comments) == 0 {
 		if m.reviewResult.Dropped > 0 {
 			return lipgloss.JoinVertical(
@@ -1127,9 +1209,6 @@ func (m Model) renderCommentsView() string {
 func (m Model) renderVerdictView() string {
 	if m.reviewRunning {
 		return m.renderReviewStatus("Reviewing verdict...")
-	}
-	if m.reviewErr != nil {
-		return fmt.Sprintf("Review error: %s", m.reviewErr)
 	}
 	if m.reviewResult.Verdict.Decision == "" {
 		return "Verdict not available."
@@ -1196,7 +1275,7 @@ func (m Model) diffPaneWidths() (int, int) {
 }
 
 func (m Model) diffPaneHeight() int {
-	height := m.height - 1
+	height := m.height - 2
 	if height < 5 {
 		height = 5
 	}
@@ -1343,8 +1422,11 @@ func (m *Model) updatePublishTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	case "p":
 		if !m.publishWorkspaceInput.Focused() && !m.publishRepoSlugInput.Focused() && !m.publishPRIDInput.Focused() && !m.publishTokenInput.Focused() {
-			m.publishRunning = true
-			return m, m.publishReviewCmd()
+			ctx, cancel := context.WithCancel(context.Background())
+			return m, tea.Batch(
+				func() tea.Msg { return publishStartedMsg{cancel: cancel} },
+				m.publishReviewCmd(ctx),
+			)
 		}
 	}
 
@@ -1407,7 +1489,7 @@ func (m *Model) updateCommentsTableLayout() {
 	}
 	leftWidth, rightWidth := m.commentsPaneWidths()
 	m.commentsTableWidth = leftWidth
-	height := m.height - 6
+	height := m.height - 7
 	if height < 6 {
 		height = 6
 	}
@@ -1767,29 +1849,39 @@ func (m Model) maybeStartReview() tea.Cmd {
 
 func startReviewCmd(diffFiles []git.DiffFile, cfg config.Config, guidelineHash string, apiKey string) tea.Cmd {
 	return func() tea.Msg {
+		slog.Info("Starting review", "files", len(diffFiles), "model", cfg.LastModel, "hash", guidelineHash)
 		updates := make(chan tea.Msg)
+		ctx, cancel := context.WithCancel(context.Background())
 		go func() {
 			defer close(updates)
 			updates <- reviewProgressMsg{completed: 0, total: len(diffFiles), failed: 0, file: "starting"}
 			client := llm.NewClient(apiKey, config.OpenRouterBaseURL())
-			ctx := context.Background()
 			result, err := review.Run(ctx, client, diffFiles, review.RunOptions{
 				Model:          cfg.LastModel,
 				GuidelinePaths: cfg.Guidelines,
 				FreeText:       cfg.FreeGuideline,
 				GuidelineHash:  guidelineHash,
 			}, func(progress review.Progress) {
-				updates <- reviewProgressMsg{
+				select {
+				case <-ctx.Done():
+					return
+				case updates <- reviewProgressMsg{
 					completed: progress.Completed,
 					total:     progress.Total,
 					failed:    progress.Failed,
 					file:      progress.CurrentFile,
 					lastError: progress.LastError,
+				}:
 				}
 			})
-			updates <- reviewCompletedMsg{result: result, err: err}
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				updates <- reviewCompletedMsg{result: result, err: err}
+			}
 		}()
-		return reviewStartedMsg{updates: updates}
+		return reviewStartedMsg{updates: updates, cancel: cancel}
 	}
 }
 
@@ -1803,8 +1895,9 @@ func listenReviewCmd(updates <-chan tea.Msg) tea.Cmd {
 	}
 }
 
-func (m Model) publishReviewCmd() tea.Cmd {
+func (m Model) publishReviewCmd(ctx context.Context) tea.Cmd {
 	return func() tea.Msg {
+		slog.Info("Starting publish to Bitbucket")
 		token := strings.TrimSpace(m.publishToken)
 		if token == "" {
 			token = strings.TrimSpace(config.BitbucketToken())
@@ -1831,7 +1924,112 @@ func (m Model) publishReviewCmd() tea.Cmd {
 		client := bitbucket.NewClient(cfg)
 		markdown := bitbucket.ComposeMarkdown(m.reviewResult)
 
-		resultID, err := client.PublishComment(markdown)
+		resultID, err := client.PublishComment(ctx, markdown)
 		return publishCompletedMsg{resultID: resultID, err: err}
 	}
+}
+
+func (m Model) renderErrorView(err error, hint string) string {
+	errorStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("9")).
+		Bold(true).
+		Padding(0, 0, 1, 0)
+
+	background := lipgloss.NewStyle().
+		Padding(1, 2).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("9"))
+
+	content := lipgloss.JoinVertical(lipgloss.Left,
+		errorStyle.Render("ERROR"),
+		m.wrapText(err.Error(), m.width/2),
+		"",
+		lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render(hint),
+	)
+
+	return lipgloss.Place(m.width, m.height-2, lipgloss.Center, lipgloss.Center, background.Render(content))
+}
+
+func (m Model) wrapText(text string, width int) string {
+	if width <= 0 {
+		return text
+	}
+	return lipgloss.NewStyle().Width(width).Render(text)
+}
+
+func (m Model) renderStatusBar() string {
+	w := m.width
+	if w <= 0 {
+		return ""
+	}
+
+	mode := "DASHBOARD"
+	if m.inWizard {
+		mode = "WIZARD"
+	}
+
+	style := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#C1C1C1")).
+		Background(lipgloss.Color("#353535")).
+		Padding(0, 1)
+
+	modeStyle := lipgloss.NewStyle().
+		Foreground(lipgloss.Color("#FFFFFF")).
+		Background(lipgloss.Color("#6124DF")).
+		Bold(true).
+		Padding(0, 1)
+
+	status := "q: quit • ?: help • h/l: tabs"
+	if m.inWizard {
+		status = "q: quit • enter: next • b: back"
+	}
+
+	modeStr := modeStyle.Render(mode)
+	statusStr := style.Width(w - lipgloss.Width(modeStr)).Render(status)
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, modeStr, statusStr)
+}
+
+func (m Model) renderHelpOverlay(_ string) string {
+	helpText := `KEYBOARD SHORTCUTS
+
+Global:
+q, ctrl+c   Quit
+?           Toggle help
+h, left     Previous tab
+l, right    Next tab
+
+Diff Tab:
+j, down     Next file
+k, up       Previous file
+tab         Switch between file list and diff
+pgup, pgdn  Scroll diff (when focused)
+
+Comments Tab:
+j, down     Next comment
+k, up       Previous comment
+space       Toggle publish inclusion
+s           Cycle severity filter
+/           Search by file path
+c           Clear filters
+tab         Switch between table and detail
+
+Publish Tab:
+tab         Cycle input fields
+p           Execute publishing
+
+Config Tab:
+r           Re-run review (keep config)
+
+Press any key to close help.`
+
+	overlayStyle := lipgloss.NewStyle().
+		BorderStyle(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Padding(1, 2).
+		Background(lipgloss.Color("#1A1A1A"))
+
+	overlay := overlayStyle.Render(helpText)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, overlay)
 }

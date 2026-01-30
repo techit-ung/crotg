@@ -8,6 +8,7 @@
 - Milestone 5 complete: comments table with filters, detail pane, and publish toggles.
 - Milestone 5 update: Diff/Comments panes now scroll independently with a focus toggle.
 - Milestone 6 complete: Bitbucket Cloud publishing flow with PR comment composition.
+- Milestone 7 complete: Keyboard help overlay, status bar, retry/error views, cancellation support, and structured logging.
 
 ## What was implemented
 - TUI entry point: `cmd/reviewer/main.go`
@@ -30,12 +31,16 @@
 - Publish tab: TUI UI for Bitbucket workspace, repo, PR ID configuration and publishing execution.
 - Persistence: Storing non-secret Bitbucket configuration to `config.json`.
 - Dependencies: Bubble Tea, Bubbles, Lip Gloss added to `go.mod`/`go.sum`
+- Milestone 7: Added `internal/logger` for structured JSON logging. Updated `cmd/reviewer/main.go` to support `--debug`, `--branch`, `--base`, and `--model` flags. Added help overlay (?), status bar, and improved error views with centering. Added cancellation support for both review and publish processes via `context.Context`.
 
 ## How to run
 - `go run ./cmd/reviewer`
+- `go run ./cmd/reviewer --base main --branch my-feature --debug`
 
-## Suggested next step (Milestone 7)
-- Implement keyboard help overlay, status bar, and retry/error views.
+## Suggested next step
+- Implement `--guideline` flag for automated runs.
+- Add `--no-tui` mode for CI/CD integration.
+- Implement comment editing modal in Comments tab.
 
 ## Notes
 - Config is stored under `~/.config/reviewer/config.json` unless `CODE_REVIEWER_CONFIG_DIR` is set.

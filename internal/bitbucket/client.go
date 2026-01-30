@@ -2,6 +2,7 @@ package bitbucket
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -23,7 +24,7 @@ func NewClient(cfg Config) *Client {
 	}
 }
 
-func (c *Client) PublishComment(markdown string) (string, error) {
+func (c *Client) PublishComment(ctx context.Context, markdown string) (string, error) {
 	url := fmt.Sprintf("https://api.bitbucket.org/2.0/repositories/%s/%s/pullrequests/%d/comments",
 		c.config.Workspace, c.config.RepoSlug, c.config.PullRequest)
 
@@ -38,7 +39,7 @@ func (c *Client) PublishComment(markdown string) (string, error) {
 		return "", fmt.Errorf("marshal payload: %w", err)
 	}
 
-	req, err := http.NewRequest("POST", url, bytes.NewBuffer(data))
+	req, err := http.NewRequestWithContext(ctx, "POST", url, bytes.NewBuffer(data))
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
