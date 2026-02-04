@@ -44,6 +44,12 @@
 - [x] Validate branches, empty diff, guideline files, and LLM JSON schema
 - [x] Implement structured logging with optional `--debug` flag
 
+## Milestone 8 — Resilience & UI Improvements
+- [x] Implement per-file error handling in review engine (partial successes)
+- [x] Add 'r' key retry mechanism in Comments tab
+- [x] Add visual focus indication (borders) for active panes in Diff and Comments tabs
+- [x] Display failed files summary in Comments view
+
 ## CLI & Future Enhancements
 - [x] Wire CLI flags (`--branch`, `--base`, `--model`, `--version`)
 - [ ] Implement `--guideline` flag for automated runs

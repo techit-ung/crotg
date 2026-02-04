@@ -58,6 +58,7 @@ type Result struct {
 	Model         string
 	GuidelineHash string
 	Dropped       int
+	FileErrors    map[string]string
 	GeneratedAt   time.Time
 }
 

@@ -9,6 +9,7 @@
 - Milestone 5 update: Diff/Comments panes now scroll independently with a focus toggle.
 - Milestone 6 complete: Bitbucket Cloud publishing flow with PR comment composition.
 - Milestone 7 complete: Keyboard help overlay, status bar, retry/error views, cancellation support, and structured logging.
+- Milestone 8 complete: Improved Resilience and UI Focus (per-file errors, partial review success, retry in Comments tab, visual focus borders).
 
 ## What was implemented
 - TUI entry point: `cmd/reviewer/main.go`

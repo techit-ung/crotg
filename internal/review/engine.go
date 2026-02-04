@@ -98,7 +98,7 @@ func Run(ctx context.Context, client *llm.Client, files []git.DiffFile, opts Run
 	}()
 
 	collected := make([]Comment, 0)
-	var firstErr error
+	fileErrors := make(map[string]string)
 	droppedTotal := 0
 
 	total := len(files)
@@ -109,6 +109,7 @@ func Run(ctx context.Context, client *llm.Client, files []git.DiffFile, opts Run
 		completed++
 		if result.err != nil {
 			failed++
+			fileErrors[result.filePath] = result.err.Error()
 		}
 		if progress != nil {
 			lastError := ""
@@ -123,15 +124,12 @@ func Run(ctx context.Context, client *llm.Client, files []git.DiffFile, opts Run
 				LastError:   lastError,
 			})
 		}
-		if result.err != nil && firstErr == nil {
-			firstErr = fmt.Errorf("review failed for %s: %w", result.filePath, result.err)
-		}
 		droppedTotal += result.dropped
 		collected = append(collected, result.comments...)
 	}
 
-	if firstErr != nil {
-		return Result{}, firstErr
+	if failed == total {
+		return Result{}, fmt.Errorf("review failed for all files; last error: %s", progressLastError(fileErrors))
 	}
 
 	deduped := dedupeComments(collected)
@@ -167,8 +165,16 @@ func Run(ctx context.Context, client *llm.Client, files []git.DiffFile, opts Run
 		Model:         opts.Model,
 		GuidelineHash: opts.GuidelineHash,
 		Dropped:       droppedTotal,
+		FileErrors:    fileErrors,
 		GeneratedAt:   time.Now(),
 	}, nil
+}
+
+func progressLastError(errs map[string]string) string {
+	for _, v := range errs {
+		return v
+	}
+	return "unknown error"
 }
 
 func dedupeComments(comments []Comment) []Comment {

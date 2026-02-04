@@ -926,13 +926,25 @@ func (m Model) renderDiffView() string {
 	m.diffView.Width = rightWidth
 	m.diffView.Height = height
 
-	left := lipgloss.NewStyle().Width(leftWidth).PaddingRight(1)
-	right := lipgloss.NewStyle().Width(rightWidth)
+	focusedStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("62"))
+	unfocusedStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("241"))
 
-	fileList := m.renderFileList(height)
+	leftPaneStyle := unfocusedStyle
+	rightPaneStyle := unfocusedStyle
+
+	if m.diffPanelFocus == panelFocusLeft {
+		leftPaneStyle = focusedStyle
+	} else {
+		rightPaneStyle = focusedStyle
+	}
+
+	fileList := m.renderFileList(height - 2)
 	diffPane := m.diffView.View()
 
-	return lipgloss.JoinHorizontal(lipgloss.Top, left.Render(fileList), right.Render(diffPane))
+	return lipgloss.JoinHorizontal(lipgloss.Top,
+		leftPaneStyle.Width(leftWidth).Render(fileList),
+		rightPaneStyle.Width(rightWidth).Render(diffPane),
+	)
 }
 
 func (m Model) renderFileList(height int) string {
@@ -1176,11 +1188,13 @@ func (m Model) renderCommentsView() string {
 		return m.renderReviewStatus("Reviewing comments...")
 	}
 	if len(m.reviewResult.Comments) == 0 {
-		if m.reviewResult.Dropped > 0 {
+		if m.reviewResult.Dropped > 0 || len(m.reviewResult.FileErrors) > 0 {
 			return lipgloss.JoinVertical(
 				lipgloss.Top,
 				m.renderCommentsWarnings(),
 				"No comments generated.",
+				"",
+				m.renderCommentsHints(),
 			)
 		}
 		return "No comments generated."
@@ -1191,17 +1205,31 @@ func (m Model) renderCommentsView() string {
 			m.renderCommentsWarnings(),
 			m.renderCommentsFilters(),
 			"No comments match current filters.",
+			"",
+			m.renderCommentsHints(),
 		)
 	}
 
 	leftWidth, rightWidth := m.commentsPaneWidths()
 
-	left := lipgloss.NewStyle().Width(leftWidth).PaddingRight(1)
-	right := lipgloss.NewStyle().Width(rightWidth)
+	focusedStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("62"))
+	unfocusedStyle := lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("241"))
+
+	leftPaneStyle := unfocusedStyle
+	rightPaneStyle := unfocusedStyle
+
+	if m.commentsPanelFocus == panelFocusLeft {
+		leftPaneStyle = focusedStyle
+	} else {
+		rightPaneStyle = focusedStyle
+	}
 
 	tableView := m.commentsTable.View()
 	detailView := m.commentsDetailView.View()
-	panes := lipgloss.JoinHorizontal(lipgloss.Top, left.Render(tableView), right.Render(detailView))
+	panes := lipgloss.JoinHorizontal(lipgloss.Top,
+		leftPaneStyle.Width(leftWidth).Render(tableView),
+		rightPaneStyle.Width(rightWidth).Render(detailView),
+	)
 
 	return lipgloss.JoinVertical(lipgloss.Top, m.renderCommentsWarnings(), m.renderCommentsFilters(), panes, "", m.renderCommentsHints())
 }
@@ -1251,9 +1279,10 @@ func (m *Model) updateDiffViewportLayout() {
 	if m.width == 0 || m.height == 0 {
 		return
 	}
-	_, rightWidth := m.diffPaneWidths()
-	m.diffView.Width = rightWidth
-	m.diffView.Height = m.diffPaneHeight()
+	leftWidth, rightWidth := m.diffPaneWidths()
+	_ = leftWidth
+	m.diffView.Width = rightWidth - 2
+	m.diffView.Height = m.diffPaneHeight() - 2
 	m.diffView.SetYOffset(m.diffView.YOffset)
 }
 
@@ -1332,6 +1361,11 @@ func (m *Model) updateCommentsTab(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.refreshCommentsTable()
 			return m, nil
 		}
+	case "r":
+		m.reviewResult = review.Result{}
+		m.reviewRunning = true
+		m.reviewProgress = reviewProgressMsg{}
+		return m, m.maybeStartReview()
 	}
 
 	if m.commentsPanelFocus == panelFocusRight {
@@ -1489,18 +1523,18 @@ func (m *Model) updateCommentsTableLayout() {
 	}
 	leftWidth, rightWidth := m.commentsPaneWidths()
 	m.commentsTableWidth = leftWidth
-	height := m.height - 7
+	height := m.height - 9
 	if height < 6 {
 		height = 6
 	}
 	m.commentsTableHeight = height
-	m.commentsTable.SetWidth(leftWidth)
-	m.commentsTable.SetHeight(height)
-	m.commentsDetailView.Width = rightWidth
-	m.commentsDetailView.Height = height
+	m.commentsTable.SetWidth(leftWidth - 2)
+	m.commentsTable.SetHeight(height - 2)
+	m.commentsDetailView.Width = rightWidth - 2
+	m.commentsDetailView.Height = height - 2
 	m.updateCommentsDetailContent(false)
 
-	available := leftWidth - 26
+	available := leftWidth - 28
 	if available < 20 {
 		available = 20
 	}
@@ -1622,10 +1656,24 @@ func (m Model) renderCommentsFilters() string {
 }
 
 func (m Model) renderCommentsWarnings() string {
-	if m.reviewResult.Dropped <= 0 {
+	warnings := make([]string, 0)
+	if m.reviewResult.Dropped > 0 {
+		warnings = append(warnings, fmt.Sprintf("Warning: %d comment(s) dropped due to missing file/line/title/body.", m.reviewResult.Dropped))
+	}
+	if len(m.reviewResult.FileErrors) > 0 {
+		var failedFiles []string
+		for path := range m.reviewResult.FileErrors {
+			failedFiles = append(failedFiles, filepath.Base(path))
+		}
+		sort.Strings(failedFiles)
+		warnings = append(warnings, lipgloss.NewStyle().Foreground(lipgloss.Color("9")).Render(
+			fmt.Sprintf("Failed to review %d file(s): %s", len(failedFiles), strings.Join(failedFiles, ", ")),
+		))
+	}
+	if len(warnings) == 0 {
 		return ""
 	}
-	return fmt.Sprintf("Warning: %d comment(s) dropped due to missing file/line/title/body.", m.reviewResult.Dropped)
+	return strings.Join(warnings, "\n")
 }
 
 func (m Model) renderCommentsHints() string {
@@ -2008,6 +2056,7 @@ pgup, pgdn  Scroll diff (when focused)
 Comments Tab:
 j, down     Next comment
 k, up       Previous comment
+r           Retry review
 space       Toggle publish inclusion
 s           Cycle severity filter
 /           Search by file path
