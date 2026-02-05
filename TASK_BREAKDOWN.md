@@ -1,4 +1,4 @@
-# TAKS_BREAKDOWN.md
+# TASK_BREAKDOWN.md
 
 ## Milestone 1 — Project skeleton
 - [x] Initialize Go module and add Bubble Tea/Bubbles dependencies
