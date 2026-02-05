@@ -32,14 +32,13 @@
 - Publish tab: TUI UI for Bitbucket workspace, repo, PR ID configuration and publishing execution.
 - Persistence: Storing non-secret Bitbucket configuration to `config.json`.
 - Dependencies: Bubble Tea, Bubbles, Lip Gloss added to `go.mod`/`go.sum`
-- Milestone 7: Added `internal/logger` for structured JSON logging. Updated `cmd/reviewer/main.go` to support `--debug`, `--branch`, `--base`, and `--model` flags. Added help overlay (?), status bar, and improved error views with centering. Added cancellation support for both review and publish processes via `context.Context`.
+- Milestone 7: Added `internal/logger` for structured JSON logging. Updated `cmd/reviewer/main.go` to support `--debug`, `--branch`, `--base`, `--model`, and `--guideline` flags. Added help overlay (?), status bar, and improved error views with centering. Added cancellation support for both review and publish processes via `context.Context`.
 
 ## How to run
 - `go run ./cmd/reviewer`
 - `go run ./cmd/reviewer --base main --branch my-feature --debug`
 
 ## Suggested next step
-- Implement `--guideline` flag for automated runs.
 - Add `--no-tui` mode for CI/CD integration.
 - Implement comment editing modal in Comments tab.
 

@@ -18,6 +18,7 @@ func main() {
 	base := flag.String("base", "", "Base branch")
 	branch := flag.String("branch", "", "Review branch")
 	model := flag.String("model", "", "Model name")
+	guideline := flag.String("guideline", "", "Guideline profile path")
 	flag.Parse()
 
 	if *version {
@@ -32,7 +33,7 @@ func main() {
 	}
 	defer logFile.Close()
 
-	program := tea.NewProgram(app.NewModel(*base, *branch, *model), tea.WithAltScreen())
+	program := tea.NewProgram(app.NewModel(*base, *branch, *model, *guideline), tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
 		log.Fatal(err)
 	}

@@ -52,6 +52,6 @@
 
 ## CLI & Future Enhancements
 - [x] Wire CLI flags (`--branch`, `--base`, `--model`, `--version`)
-- [ ] Implement `--guideline` flag for automated runs
+- [x] Implement `--guideline` flag for automated runs
 - [ ] Implement `--no-tui` mode
 - [ ] Track open questions/future enhancements for v2 (Bitbucket diff fetch, caching, exports, etc.)

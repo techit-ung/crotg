@@ -88,12 +88,13 @@ type Model struct {
 	showHelp bool
 	cancel   context.CancelFunc
 
-	initialBase   string
-	initialBranch string
-	initialModel  string
+	initialBase      string
+	initialBranch    string
+	initialModel     string
+	initialGuideline string
 }
 
-func NewModel(base, branch, model string) Model {
+func NewModel(base, branch, model, guideline string) Model {
 	pathInput := textinput.New()
 	pathInput.Placeholder = "path/to/guideline.md"
 	freeTextInput := textinput.New()
@@ -158,9 +159,10 @@ func NewModel(base, branch, model string) Model {
 		publishRepoSlugInput:  publishRepoSlugInput,
 		publishPRIDInput:      publishPRIDInput,
 		publishTokenInput:     publishTokenInput,
-		initialBase:           base,
-		initialBranch:         branch,
-		initialModel:          model,
+		initialBase:      base,
+		initialBranch:    branch,
+		initialModel:     model,
+		initialGuideline: guideline,
 		modelOptions: []string{
 			review.DefaultModel,
 			"Custom...",
@@ -209,8 +211,29 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.guidelineOptions = msg.paths
 		m.guidelineErr = msg.err
 		m.guidelineSelected = make(map[string]bool)
+
+		selectedGuidelines := m.cfg.Guidelines
+		if m.initialGuideline != "" {
+			resolved, err := review.ResolveGuidelinePath(m.repoRoot, m.initialGuideline)
+			if err == nil {
+				selectedGuidelines = []string{resolved}
+				// Ensure the specified guideline is in the options even if not found by scan
+				found := false
+				for _, p := range m.guidelineOptions {
+					if p == resolved {
+						found = true
+						break
+					}
+				}
+				if !found {
+					m.guidelineOptions = append(m.guidelineOptions, resolved)
+					sort.Strings(m.guidelineOptions)
+				}
+			}
+		}
+
 		for _, path := range msg.paths {
-			for _, selected := range m.cfg.Guidelines {
+			for _, selected := range selectedGuidelines {
 				if path == selected {
 					m.guidelineSelected[path] = true
 					break
